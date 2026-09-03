@@ -41,21 +41,14 @@
     {% include "lists/components/list_form.html" %}
   </div>
 
-  <div x-data="{ sort: '{{ current_sort|escapejs }}', type: '{{ request.GET.type|default:'all'|escapejs }}', status: '{{ current_status|escapejs }}', query: '{{ request.GET.q|default:''|escapejs }}', mediaTypeLabels: {
-    {% for media_type in media_types %}'{{ media_type }}': '{{ media_type|media_type_readable_plural }}',{% endfor %}
-    'all': 'All Types' }, statusLabels: {
-    {% for value, label in status_choices %}
-      '{{ value }}': '{{ label }}'
-      {% if not forloop.last %},{% endif %}
-
-    {% endfor %}
-    }, getMediaTypeLabel() { return this.mediaTypeLabels[this.type] || this.type; } }">
+  <div x-data="{ sort: '{{ current_sort|escapejs }}', type: '{{ request.GET.type|default:'all'|escapejs }}', status: '{{ current_status|escapejs }}', layout: '{{ current_layout|escapejs }}', query: '{{ request.GET.q|default:''|escapejs }}', mediaTypeLabels: { {% for media_type in media_types %}'{{ media_type }}': '{{ media_type|media_type_readable_plural }}',{% endfor %} 'all': 'All Types' }, statusLabels: { {% for value, label in status_choices %} '{{ value }}': '{{ label }}' {% if not forloop.last %},{% endif %}  {% endfor %} }, getMediaTypeLabel() { return this.mediaTypeLabels[this.type] || this.type; } }">
 
     <!-- Form to manage state -->
     <form id="filter-form" class="hidden">
       <input type="hidden" name="sort" x-model="sort">
       <input type="hidden" name="type" x-model="type">
       <input type="hidden" name="status" x-model="status">
+      <input type="hidden" name="layout" x-model="layout">
       <input type="hidden" name="q" x-model="query">
     </form>
 
@@ -184,7 +177,7 @@
                   type="button">
             {% include "app/icons/arrows-up-down.svg" with classes="w-4 h-4" %}
             <span class="text-sm"
-                  x-text="sort === 'date_added' ? 'Date Added' : (sort === 'title' ? 'Title' : 'Media Type')"></span>
+                  x-text="sort === 'date_added' ? 'Date Added' : (sort === 'title' ? 'Title' : (sort === 'custom' ? 'Custom Order' : 'Media Type'))"></span>
             {% include "app/icons/chevron-down.svg" with classes="w-4 h-4" %}
           </button>
 
@@ -210,10 +203,38 @@
             {% endfor %}
           </div>
         </div>
+
+        {# Layout Toggle #}
+        <div class="flex rounded-md overflow-hidden border border-gray-700">
+          <button hx-get="{% url 'list_detail' custom_list.id %}"
+                  {% if items %}hx-target="#items-grid"{% else %}hx-target="this" hx-swap="none"{% endif %}
+                  hx-include="#filter-form"
+                  hx-vals='{"layout": "grid"}'
+                  hx-indicator="#loading-indicator"
+                  class="p-2 cursor-pointer"
+                  :class="layout === 'grid' ? 'bg-indigo-600 text-white' : 'bg-[#39404b] hover:bg-[#454d5a]'"
+                  title="Grid View"
+                  @click="layout = 'grid'"
+                  type="button">{% include "app/icons/four-square.svg" with classes="w-5 h-5" %}</button>
+          <button hx-get="{% url 'list_detail' custom_list.id %}"
+                  {% if items %}hx-target="#items-grid"{% else %}hx-target="this" hx-swap="none"{% endif %}
+                  hx-include="#filter-form"
+                  hx-vals='{"layout": "table"}'
+                  hx-indicator="#loading-indicator"
+                  class="p-2 cursor-pointer"
+                  :class="layout === 'table' ? 'bg-indigo-600 text-white' : 'bg-[#39404b] hover:bg-[#454d5a]'"
+                  title="Table View"
+                  @click="layout = 'table'"
+                  type="button">{% include "app/icons/table.svg" with classes="w-5 h-5" %}</button>
+        </div>
       </div>
     </div>
     {% if items %}
-      <div id="items-grid" class="media-grid">{% include "lists/components/media_grid.html" %}</div>
+      <div id="items-grid"
+           data-reorder-url="{% url 'list_item_reorder' %}"
+           data-move-url="{% url 'list_item_move' %}"
+           data-list-id="{{ custom_list.id }}"
+           data-csrf="{{ csrf_token }}">{% include "lists/components/list_items.html" %}</div>
     {% else %}
       <div class="flex flex-col items-center justify-center py-16 bg-[#2a2f35] rounded-lg">
         <div class="text-center max-w-md mx-auto p-6">
@@ -240,4 +261,6 @@
 
 {% block js %}
   {{ form.media.js }}
+  <script src="{% static 'js/libraries/sortablejs-1.15.6.min.js' %}"></script>
+  <script src="{% static 'js/list-reorder.js' %}{% get_static_file_mtime 'js/list-reorder.js' %}"></script>
 {% endblock js %}

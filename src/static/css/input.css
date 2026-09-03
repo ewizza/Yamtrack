@@ -40,6 +40,18 @@
   @apply grid grid-cols-2 xs:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4;
 }
 
+/* Custom up/down buttons replace the native spinner for
+   .list-position-input (see position_stepper.html) so we control what
+   "up"/"down" mean instead of the browser's built-in increment-only arrows. */
+.list-position-input::-webkit-outer-spin-button,
+.list-position-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.list-position-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 /* https://tailwindcss.com/docs/upgrade-guide#hover-styles-on-mobile */
 @custom-variant hover-tap (&:hover);
 @custom-variant parent-hover-tap (.hover-tap:hover &);

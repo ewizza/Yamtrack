@@ -2,8 +2,15 @@ import logging
 
 from django.contrib import messages
 from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Count, F, OuterRef, Q, Subquery
-from django.http import Http404
+from django.http import (
+    Http404,
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseForbidden,
+    HttpResponseNotFound,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
@@ -12,7 +19,12 @@ from app.models import Item, MediaManager, MediaTypes
 from app.providers import services
 from lists.forms import CustomListForm
 from lists.models import CustomList, CustomListItem
-from users.models import ListDetailSortChoices, ListSortChoices, MediaStatusChoices
+from users.models import (
+    LayoutChoices,
+    ListDetailSortChoices,
+    ListSortChoices,
+    MediaStatusChoices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +122,18 @@ def list_detail(request, list_id):
             "list_detail_status",
             request.GET.get("status"),
         ),
+        "layout": request.user.update_preference(
+            "list_detail_layout",
+            request.GET.get("layout"),
+        ),
         "page": int(request.GET.get("page", 1)),
         "search_query": request.GET.get("q", ""),
     }
 
     # Build and filter base queryset
-    items = custom_list.items.all()
+    # list_order lets the template show/edit each item's manual position
+    # even when other sorts are active.
+    items = custom_list.items.annotate(list_order=F("customlistitem__order"))
     if params["search_query"]:
         items = items.filter(title__icontains=params["search_query"])
     if params["media_type"] != "all":
@@ -147,6 +165,7 @@ def list_detail(request, list_id):
             F("episode_number").asc(nulls_first=True),
         ],
         "media_type": ["media_type"],
+        "custom": ["customlistitem__order"],
     }
     items = items.order_by(
         *sort_mapping.get(params["sort_by"], ["-customlistitem__date_added"]),
@@ -180,8 +199,15 @@ def list_detail(request, list_id):
         else None,
         "current_sort": params["sort_by"],
         "current_status": params["status_filter"] or MediaStatusChoices.ALL,
+        "current_layout": params["layout"],
         "sort_choices": ListDetailSortChoices.choices,
         "status_choices": MediaStatusChoices.choices,
+        "layout_choices": LayoutChoices.choices,
+        # Drag-to-reorder and manual position entry only make sense on the
+        # "custom" sort, and only for users who can actually edit the list.
+        "can_reorder": params["sort_by"] == "custom"
+        and custom_list.user_can_edit(request.user),
+        "list_total_items": custom_list.items.count(),
     }
 
     # Additional context for full page render. Soft-navigation body swaps (e.g.
@@ -200,7 +226,7 @@ def list_detail(request, list_id):
         return render(request, "lists/list_detail.html", context)
 
     # HTMX partial response
-    return render(request, "lists/components/media_grid.html", context)
+    return render(request, "lists/components/list_items.html", context)
 
 
 @require_POST
@@ -321,3 +347,106 @@ def list_item_toggle(request):
         "lists/components/list_item_button.html",
         {"custom_list": custom_list, "item": item, "has_item": has_item},
     )
+
+
+@require_POST
+def list_item_reorder(request):
+    """Persist a new manual order for the items of a custom list.
+
+    Expects `list_id` and a repeated `item_id` field giving the items'
+    Item ids in their new order. Only the items included in the request are
+    touched; any item not passed (e.g. filtered out client-side) keeps its
+    existing position relative to the others.
+    """
+    list_id = request.POST.get("list_id")
+    item_ids = request.POST.getlist("item_id")
+
+    custom_list = get_object_or_404(CustomList, id=list_id)
+    if not custom_list.user_can_edit(request.user):
+        return HttpResponseForbidden()
+
+    try:
+        ordered_ids = [int(item_id) for item_id in item_ids]
+    except (TypeError, ValueError):
+        return HttpResponseForbidden()
+
+    with transaction.atomic():
+        # Lock the affected rows first so two concurrent reorders on the
+        # same list can't interleave and leave duplicate/gapped ranks.
+        list_items = (
+            CustomListItem.objects.select_for_update()
+            .filter(custom_list=custom_list, item_id__in=ordered_ids)
+            .select_related(None)
+        )
+        item_id_to_list_item = {li.item_id: li for li in list_items}
+
+        to_update = []
+        for rank, item_id in enumerate(ordered_ids):
+            list_item = item_id_to_list_item.get(item_id)
+            if list_item is not None and list_item.order != rank:
+                list_item.order = rank
+                to_update.append(list_item)
+
+        if to_update:
+            CustomListItem.objects.bulk_update(to_update, ["order"])
+
+    logger.info("%s reordered.", custom_list)
+    return HttpResponse(status=204)
+
+
+@require_POST
+def list_item_move(request):
+    """Move a single item to an absolute 1-based position in its list.
+
+    Unlike `list_item_reorder` (which re-ranks a batch of items the browser
+    already has loaded, for drag-and-drop), this walks the *entire* list
+    server-side. That makes it the only way to reorder items that are more
+    than a page/scroll-load apart, e.g. moving item #200 to position #4 in a
+    long list without dragging it through everything in between.
+    """
+    list_id = request.POST.get("list_id")
+    item_id = request.POST.get("item_id")
+    position = request.POST.get("position")
+
+    custom_list = get_object_or_404(CustomList, id=list_id)
+    if not custom_list.user_can_edit(request.user):
+        return HttpResponseForbidden()
+
+    try:
+        item_id = int(item_id)
+        position = int(position)
+    except (TypeError, ValueError):
+        return HttpResponseBadRequest("item_id and position must be integers.")
+
+    if position < 1:
+        return HttpResponseBadRequest("position must be at least 1.")
+
+    with transaction.atomic():
+        # Lock and load every item in the list, in its current order, so the
+        # whole-list reinsertion below can't race with another move/reorder.
+        list_items = list(
+            CustomListItem.objects.select_for_update()
+            .filter(custom_list=custom_list)
+            .order_by("order", "date_added"),
+        )
+
+        moving = next((li for li in list_items if li.item_id == item_id), None)
+        if moving is None:
+            return HttpResponseNotFound()
+
+        list_items.remove(moving)
+        # 1-based position -> 0-based index, clamped to the end of the list.
+        target_index = min(position - 1, len(list_items))
+        list_items.insert(target_index, moving)
+
+        to_update = []
+        for rank, list_item in enumerate(list_items):
+            if list_item.order != rank:
+                list_item.order = rank
+                to_update.append(list_item)
+
+        if to_update:
+            CustomListItem.objects.bulk_update(to_update, ["order"])
+
+    logger.info("%s item moved to position %s.", custom_list, position)
+    return HttpResponse(status=204)

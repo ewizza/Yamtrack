@@ -83,6 +83,7 @@ class ListDetailSortChoices(models.TextChoices):
     DATE_ADDED = "date_added", "Date Added"
     TITLE = "title", "Title"
     MEDIA_TYPE = "media_type", "Media Type"
+    CUSTOM = "custom", "Custom Order"
 
 
 class QuickWatchDateChoices(models.TextChoices):
@@ -391,6 +392,11 @@ class User(AbstractUser):
         default=MediaStatusChoices.ALL,
         choices=MediaStatusChoices,
     )
+    list_detail_layout = models.CharField(
+        max_length=20,
+        default=LayoutChoices.GRID,
+        choices=LayoutChoices,
+    )
 
     # Notification settings
     notification_urls = models.TextField(
@@ -516,6 +522,10 @@ class User(AbstractUser):
             models.CheckConstraint(
                 name="list_detail_status_valid",
                 condition=models.Q(list_detail_status__in=MediaStatusChoices.values),
+            ),
+            models.CheckConstraint(
+                name="list_detail_layout_valid",
+                condition=models.Q(list_detail_layout__in=LayoutChoices.values),
             ),
             models.CheckConstraint(
                 name="tv_status_valid",

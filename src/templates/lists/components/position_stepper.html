@@ -1,0 +1,31 @@
+{% comment %}
+Manual "move to position" control for one list item: a number field plus
+explicit up/down buttons. The buttons intentionally do NOT use the number
+input's native spin arrows (those always increment on the up arrow) — up
+here means "move earlier in the list", so it decrements the position
+number, and down increments it. Expects `item` and `list_total_items` in
+context.
+{% endcomment %}
+<div class="list-position-stepper flex items-stretch bg-gray-900/90 rounded-md border border-gray-600 overflow-hidden">
+  <input type="number"
+         class="list-position-input w-10 py-1 px-1 bg-transparent text-white text-xs text-center focus:outline-none"
+         min="1"
+         max="{{ list_total_items }}"
+         value="{{ item.list_order|add:1 }}"
+         title="Position (1-{{ list_total_items }})"
+         data-move-item-id="{{ item.id }}">
+  <div class="flex flex-col border-l border-gray-600">
+    <button type="button"
+            class="list-position-up flex items-center justify-center px-0.5 hover:bg-gray-700 text-gray-300 hover:text-white cursor-pointer"
+            title="Move earlier"
+            data-move-item-id="{{ item.id }}">
+      {% include "app/icons/chevron-up.svg" with classes="w-2.5 h-2.5" %}
+    </button>
+    <button type="button"
+            class="list-position-down flex items-center justify-center px-0.5 hover:bg-gray-700 text-gray-300 hover:text-white cursor-pointer border-t border-gray-600"
+            title="Move later"
+            data-move-item-id="{{ item.id }}">
+      {% include "app/icons/chevron-down.svg" with classes="w-2.5 h-2.5" %}
+    </button>
+  </div>
+</div>

@@ -1,0 +1,24 @@
+{% if current_layout == "table" %}
+  <div class="bg-[#2a2f35] p-4 rounded-lg overflow-hidden max-w-[calc(100svw-4rem)] overflow-x-scroll">
+    <table class="w-full bg-[#2a2f35]">
+      <thead class="text-left text-gray-400 text-sm">
+        <tr>
+          {% if can_reorder %}<th class="p-2 w-20">Order</th>{% endif %}
+          <th class="p-2 w-15"></th>
+          <th class="p-2 pe-8 w-2/5">Title</th>
+          <th class="p-2 text-center">Type</th>
+          <th class="p-2 text-center">Score</th>
+          <th class="p-2 text-center">Progress</th>
+          <th class="p-2 text-center">Status</th>
+          <th class="p-2 text-center">Start Date</th>
+          <th class="p-2 text-center">End Date</th>
+        </tr>
+      </thead>
+      <tbody id="items-sortable-root">
+        {% include "lists/components/media_table.html" %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="media-grid" id="items-sortable-root">{% include "lists/components/media_grid.html" %}</div>
+{% endif %}

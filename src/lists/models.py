@@ -109,6 +109,10 @@ class CustomListItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     custom_list = models.ForeignKey(CustomList, on_delete=models.CASCADE)
     date_added = models.DateTimeField(auto_now_add=True)
+    # Dense rank (0-based) of this item within its list's manual/custom order.
+    # Reassigned in full for the affected list on every reorder, so values
+    # always form a contiguous 0..n-1 sequence with no gaps.
+    order = models.PositiveIntegerField(default=0)
 
     objects = CustomListItemManager()
 
@@ -121,6 +125,9 @@ class CustomListItem(models.Model):
                 fields=["item", "custom_list"],
                 name="%(app_label)s_customlistitem_unique_item_list",
             ),
+        ]
+        indexes = [
+            models.Index(fields=["custom_list", "order"]),
         ]
 
     def __str__(self):

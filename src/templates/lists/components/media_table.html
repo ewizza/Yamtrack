@@ -1,0 +1,90 @@
+{% load app_tags %}
+
+{% for item in items %}
+  <tr class="hover:bg-[#39404b] transition-colors cursor-pointer hover-tap"
+      x-data="{ trackOpen: false }"
+      {% if can_reorder %}data-item-id="{{ item.id }}"{% endif %}
+      {% if forloop.last and has_next %} hx-get="{% url 'list_detail' custom_list.id %}?page={{ next_page_number }}" hx-trigger="revealed threshold:200px" hx-swap="afterend" hx-include="#filter-form" hx-indicator="#loading-indicator" {% endif %}>
+    {% if can_reorder %}
+      <td class="p-2">
+        <div class="flex items-center gap-1.5">
+          <span class="list-drag-handle cursor-grab active:cursor-grabbing p-1"
+                title="Drag to reorder">
+            {% include "app/icons/arrows-up-down.svg" with classes="w-4 h-4 text-gray-400" %}
+          </span>
+          {% include "lists/components/position_stepper.html" %}
+        </div>
+      </td>
+    {% endif %}
+    <td class="p-2 relative">
+      <img alt="{{ item }}"
+           class="lazyload min-w-10 w-10 h-10 object-cover rounded-md"
+           data-src="{{ item.image }}"
+           src="{{ IMG_NONE }}">
+    </td>
+    <td class="p-2 pe-8 font-medium">
+      <div class="flex justify-between items-center">
+        <a href="{{ item|media_url }}"
+           class="hover:text-indigo-400 transition-colors line-clamp-1">{{ item }}</a>
+
+        {% if item.media.repeats > 1 %}
+          <div class="flex items-center">
+            {% include "app/icons/repeat.svg" with classes="w-4 h-4 text-slate-200 mr-1" %}
+            <span class="text-sm text-white">{{ item.media.repeats }}</span>
+          </div>
+        {% endif %}
+      </div>
+    </td>
+    <td class="p-2 text-center text-sm text-gray-400">{{ item.media_type|media_type_readable_plural }}</td>
+
+    {% if item.media.score is not None %}
+      <td class="p-2 text-center">
+        <div class="flex items-center justify-center">
+          {% include "app/icons/star.svg" with classes="w-4 h-4 text-yellow-400 mr-1 fill-current" %}
+          <span class="text-white -mt-0.75">{{ item.media.formatted_score }}</span>
+        </div>
+      </td>
+    {% else %}
+      <td class="p-2 text-center">
+        <div class="flex items-center justify-center">
+          {% include "app/icons/star.svg" with classes="w-4 h-4 text-gray-400 mr-1 fill-current" %}
+        </div>
+      </td>
+    {% endif %}
+
+    {% if item.media_type == MediaTypes.MOVIE.value or not item.media %}
+      <td class="p-2 text-center">
+        <span class="text-gray-500">-</span>
+      </td>
+    {% else %}
+      <td class="p-2 text-center">
+        {{ item.media.formatted_progress }}
+        {% if item.media.max_progress %}/ {{ item.media.max_progress }}{% endif %}
+      </td>
+    {% endif %}
+
+    <td class="p-2 text-center">
+      {% if item.media.status %}
+        {{ item.media.status|media_status_readable }}
+      {% else %}
+        <span class="text-gray-500">-</span>
+      {% endif %}
+    </td>
+
+    {% if item.media.start_date %}
+      <td class="p-2 text-center">{{ item.media.start_date|date_format:request.user }}</td>
+    {% else %}
+      <td class="p-2 text-center">
+        <span class="text-gray-500">-</span>
+      </td>
+    {% endif %}
+
+    {% if item.media.end_date %}
+      <td class="p-2 text-center">{{ item.media.end_date|date_format:request.user }}</td>
+    {% else %}
+      <td class="p-2 text-center">
+        <span class="text-gray-500">-</span>
+      </td>
+    {% endif %}
+  </tr>
+{% endfor %}

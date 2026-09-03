@@ -225,6 +225,22 @@ def list_detail(request, list_id):
         )
         return render(request, "lists/list_detail.html", context)
 
+    # Infinite-scroll pagination ("revealed" trigger on the last item) fetches
+    # the next page and appends it as a sibling via hx-swap="afterend" — it
+    # must get back only the bare item fragment, not the full table/grid
+    # wrapper. Swapping in a whole <table> (with its own <thead>) as a
+    # sibling of a <tr> is invalid HTML; browsers "foster-parent" it out of
+    # the table, which visually detaches it and looks like items shifted out
+    # of place. Anything else (sort/filter/search/layout change) targets
+    # #items-grid's innerHTML directly and needs the full wrapper.
+    if params["page"] > 1:
+        fragment = (
+            "lists/components/media_table.html"
+            if params["layout"] == "table"
+            else "lists/components/media_grid.html"
+        )
+        return render(request, fragment, context)
+
     # HTMX partial response
     return render(request, "lists/components/list_items.html", context)
 

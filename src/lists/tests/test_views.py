@@ -503,6 +503,49 @@ class ListDetailViewTests(TestCase):
         self.assertTemplateUsed(response, "lists/components/media_grid.html")
         self.assertNotIn("form", response.context)
 
+    @patch.object(get_user_model(), "update_preference")
+    @patch.object(CustomList, "user_can_view")
+    def test_list_detail_view_pagination_returns_bare_fragment(
+        self,
+        mock_user_can_view,
+        mock_update_preference,
+    ):
+        """Infinite-scroll pagination (page > 1) must not re-wrap in a table/grid.
+
+        The "revealed" trigger appends the response as a sibling of the last
+        item via hx-swap="afterend", so a page>1 request must get back only
+        the bare item markup — never lists/components/list_items.html, whose
+        <table>/<thead> (or nested .media-grid) would land invalidly inside
+        the existing structure.
+        """
+        mock_update_preference.side_effect = ["custom", None, "table"]
+        mock_user_can_view.return_value = True
+
+        for i in range(20):
+            item = Item.objects.create(
+                media_id=f"page-{i}",
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=f"Pagination Movie {i}",
+            )
+            CustomListItem.objects.create(
+                custom_list=self.custom_list,
+                item=item,
+                order=i,
+            )
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.id]) + "?sort=custom&page=2",
+            headers={"hx-request": "true"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "lists/components/media_table.html")
+        self.assertTemplateNotUsed(response, "lists/components/list_items.html")
+        content = response.content.decode()
+        self.assertNotIn("<table", content)
+        self.assertNotIn("<thead", content)
+
 
 class CreateListViewTest(TestCase):
     """Test case for the create list view."""

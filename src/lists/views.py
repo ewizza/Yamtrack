@@ -3,7 +3,7 @@ import logging
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, OuterRef, Q, Subquery
+from django.db.models import Count, F, Max, OuterRef, Q, Subquery
 from django.http import (
     Http404,
     HttpResponse,
@@ -338,7 +338,20 @@ def list_item_toggle(request):
         logger.info("%s removed from %s.", item, custom_list)
         has_item = False
     else:
-        custom_list.items.add(item)
+        with transaction.atomic():
+            # Lock the list's existing rows so two concurrent adds can't
+            # compute the same "next" order and collide.
+            max_order = (
+                CustomListItem.objects.select_for_update()
+                .filter(custom_list=custom_list)
+                .aggregate(Max("order"))["order__max"]
+            )
+            next_order = 0 if max_order is None else max_order + 1
+            CustomListItem.objects.create(
+                custom_list=custom_list,
+                item=item,
+                order=next_order,
+            )
         logger.info("%s added to %s.", item, custom_list)
         has_item = True
 

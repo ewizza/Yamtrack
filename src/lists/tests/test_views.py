@@ -799,6 +799,40 @@ class ListItemToggleTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(self.item, self.list.items.all())
 
+    def test_list_item_toggle_appends_to_bottom(self):
+        """New items get the next-highest order, landing at the bottom."""
+        self.client.login(**self.credentials)
+        existing_items = [
+            Item.objects.create(
+                media_id=str(100 + i),
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=f"Existing Movie {i}",
+            )
+            for i in range(3)
+        ]
+        for index, existing_item in enumerate(existing_items):
+            CustomListItem.objects.create(
+                custom_list=self.list,
+                item=existing_item,
+                order=index,
+            )
+
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {
+                "item_id": self.item.id,
+                "custom_list_id": self.list.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        new_list_item = CustomListItem.objects.get(
+            custom_list=self.list,
+            item=self.item,
+        )
+        self.assertEqual(new_list_item.order, 3)
+
     def test_list_item_owner_toggle_remove(self):
         """Test removing an item from a list as owner."""
         self.client.login(**self.credentials)

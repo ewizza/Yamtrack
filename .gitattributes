@@ -1,0 +1,9 @@
+# Files that ship into the Linux Docker image must keep LF line endings
+# regardless of the checking-out platform's core.autocrlf setting — a CRLF
+# shebang (`#!/bin/sh\r`) makes the container fail with a confusing
+# "no such file or directory" instead of a permissions/syntax error.
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+supervisord.conf text eol=lf
+nginx.conf text eol=lf
+Procfile text eol=lf

@@ -11,19 +11,15 @@
       <a href="{% url 'list_detail' custom_list.id %}"
          class="absolute inset-0"></a>
 
-      <div class="absolute top-2 right-2 flex items-center gap-2 {% if not custom_list.is_pinned %}opacity-0 group-hover:opacity-100{% endif %} transition-all duration-200">
+      <div class="absolute top-2 right-2 flex items-center gap-2">
         <form method="post">
           {% csrf_token %}
           <input type="hidden" name="list_id" value="{{ custom_list.id }}">
           <button type="submit"
                   formaction="{% url 'list_pin_toggle' %}?next={{ request.path }}"
-                  class="p-2 bg-black/50 hover:bg-black/75 rounded-full text-white cursor-pointer {% if custom_list.is_pinned %}hover:text-gray-300{% else %}hover:text-indigo-400{% endif %}"
+                  class="p-2 bg-black/50 hover:bg-black/75 rounded-full cursor-pointer {% if custom_list.is_pinned %}text-indigo-400 hover:text-indigo-300{% else %}text-white hover:text-indigo-400{% endif %}"
                   title="{% if custom_list.is_pinned %}Unpin from sidebar{% else %}Pin to sidebar{% endif %}">
-            {% if custom_list.is_pinned %}
-              {% include "app/icons/star.svg" with classes="w-4 h-4 text-yellow-400 fill-current" %}
-            {% else %}
-              {% include "app/icons/star.svg" with classes="w-4 h-4 fill-current" %}
-            {% endif %}
+            {% include "app/icons/pin.svg" with classes="w-4 h-4" %}
           </button>
         </form>
         <button class="p-2 bg-black/50 hover:bg-black/75 rounded-full text-white hover:text-indigo-400 cursor-pointer"

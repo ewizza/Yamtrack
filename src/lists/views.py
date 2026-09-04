@@ -3,7 +3,7 @@ import logging
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, Max, OuterRef, Q, Subquery
+from django.db.models import Count, Exists, F, Max, OuterRef, Q, Subquery
 from django.http import (
     Http404,
     HttpResponse,
@@ -18,7 +18,7 @@ from app import helpers
 from app.models import Item, MediaManager, MediaTypes
 from app.providers import services
 from lists.forms import CustomListForm
-from lists.models import CustomList, CustomListItem
+from lists.models import CustomList, CustomListItem, CustomListPin
 from users.models import (
     LayoutChoices,
     ListDetailSortChoices,
@@ -37,7 +37,14 @@ def lists(request):
     page = request.GET.get("page", 1)
     sort_by = request.user.update_preference("lists_sort", request.GET.get("sort"))
 
-    custom_lists = CustomList.objects.get_user_lists(request.user)
+    custom_lists = CustomList.objects.get_user_lists(request.user).annotate(
+        is_pinned=Exists(
+            CustomListPin.objects.filter(
+                custom_list=OuterRef("pk"),
+                user=request.user,
+            ),
+        ),
+    )
 
     if search_query:
         custom_lists = custom_lists.filter(
@@ -287,6 +294,28 @@ def delete(request):
         return redirect("lists")
 
     messages.error(request, "You do not have permission to delete this list.")
+    return helpers.redirect_back(request)
+
+
+@require_POST
+def pin_toggle(request):
+    """Pin or unpin a custom list to the caller's sidebar nav."""
+    list_id = request.POST.get("list_id")
+    custom_list = get_object_or_404(CustomList, id=list_id)
+    if not custom_list.user_can_view(request.user):
+        messages.error(request, "You do not have permission to pin this list.")
+        return helpers.redirect_back(request)
+
+    pin, created = CustomListPin.objects.get_or_create(
+        user=request.user,
+        custom_list=custom_list,
+    )
+    if created:
+        logger.info("%s pinned %s.", request.user, custom_list)
+    else:
+        pin.delete()
+        logger.info("%s unpinned %s.", request.user, custom_list)
+
     return helpers.redirect_back(request)
 
 

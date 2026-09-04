@@ -62,6 +62,12 @@ class CustomList(models.Model):
         blank=True,
         through="CustomListItem",
     )
+    pinned_by = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="pinned_lists",
+        blank=True,
+        through="CustomListPin",
+    )
 
     objects = CustomListManager()
 
@@ -133,3 +139,38 @@ class CustomListItem(models.Model):
     def __str__(self):
         """Return the name of the list item."""
         return self.item.title
+
+
+class CustomListPin(models.Model):
+    """A user's pin of a custom list, shown in their sidebar nav.
+
+    Pinning is personal: collaborators on a shared list each choose their
+    own pins independently. Ordering is simply pin time (oldest first, i.e.
+    the first list you pinned stays at the top) — no manual reordering.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    custom_list = models.ForeignKey(
+        CustomList,
+        on_delete=models.CASCADE,
+        related_name="pins",
+    )
+    pinned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Meta options for the model."""
+
+        ordering = ["pinned_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "custom_list"],
+                name="%(app_label)s_customlistpin_unique_user_list",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "pinned_at"]),
+        ]
+
+    def __str__(self):
+        """Return a description of the pin."""
+        return f"{self.user} pinned {self.custom_list}"

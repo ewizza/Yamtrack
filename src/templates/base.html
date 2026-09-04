@@ -106,6 +106,29 @@
                   </li>
                 {% endfor %}
               </ul>
+
+              {% if pinned_lists %}
+                <div class="border-t border-[#2c3136] pt-4 mb-6">
+                  <ul class="space-y-1">
+                    {% for pinned_list in pinned_lists %}
+                      {% url 'list_detail' pinned_list.id as pinned_list_url %}
+                      <li>
+                        <a href="{{ pinned_list_url }}"
+                           class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == pinned_list_url %}text-white bg-[#2c3136]{% else %}text-gray-400 hover:text-white hover:bg-[#23272b]{% endif %}">
+                          {% if request.path|str_equals:pinned_list_url %}
+                            {% include "app/icons/list.svg" with classes="w-5 h-5 text-indigo-400 " %}
+
+                          {% else %}
+                            {% include "app/icons/list.svg" with classes="w-5 h-5" %}
+
+                          {% endif %}
+                          <span class="truncate">{{ pinned_list.name }}</span>
+                        </a>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
             {% endblock sidebar_own_media %}
 
             {% block sidebar_external_media_view %}

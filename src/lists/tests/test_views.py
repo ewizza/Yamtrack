@@ -5,7 +5,7 @@ from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 
 from app.models import TV, Anime, Item, MediaTypes, Movie, Sources, Status
-from lists.models import CustomList, CustomListItem
+from lists.models import CustomList, CustomListItem, CustomListPin
 
 
 class ListsViewTests(TestCase):
@@ -650,6 +650,88 @@ class DeleteListViewTest(TestCase):
         self.client.login(**self.collaborator_credentials)
         self.client.post(reverse("list_delete"), {"list_id": self.list.id})
         self.assertEqual(CustomList.objects.count(), 1)
+
+
+class PinToggleViewTests(TestCase):
+    """Test the pin_toggle view."""
+
+    def setUp(self):
+        """Create a user, log in, and create a list."""
+        self.client = Client()
+        self.credentials = {"username": "test", "password": "12345"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+
+        self.collaborator_credentials = {
+            "username": "collaborator",
+            "password": "12345",
+        }
+        self.collaborator = get_user_model().objects.create_user(
+            **self.collaborator_credentials,
+        )
+
+        self.outsider_credentials = {"username": "outsider", "password": "12345"}
+        self.outsider = get_user_model().objects.create_user(
+            **self.outsider_credentials,
+        )
+
+        self.list = CustomList.objects.create(name="Test List", owner=self.user)
+        self.list.collaborators.add(self.collaborator)
+
+    def test_pin_list(self):
+        """Test pinning a list as owner."""
+        self.client.login(**self.credentials)
+        self.client.post(reverse("list_pin_toggle"), {"list_id": self.list.id})
+        self.assertTrue(
+            CustomListPin.objects.filter(
+                user=self.user,
+                custom_list=self.list,
+            ).exists(),
+        )
+
+    def test_unpin_list(self):
+        """Test that pinning twice unpins."""
+        self.client.login(**self.credentials)
+        CustomListPin.objects.create(user=self.user, custom_list=self.list)
+        self.client.post(reverse("list_pin_toggle"), {"list_id": self.list.id})
+        self.assertFalse(
+            CustomListPin.objects.filter(
+                user=self.user,
+                custom_list=self.list,
+            ).exists(),
+        )
+
+    def test_pin_list_collaborator(self):
+        """Test that a collaborator can pin a shared list."""
+        self.client.login(**self.collaborator_credentials)
+        self.client.post(reverse("list_pin_toggle"), {"list_id": self.list.id})
+        self.assertTrue(
+            CustomListPin.objects.filter(
+                user=self.collaborator,
+                custom_list=self.list,
+            ).exists(),
+        )
+
+    def test_pins_are_per_user(self):
+        """Test that one user's pin doesn't affect another's."""
+        CustomListPin.objects.create(user=self.user, custom_list=self.list)
+        self.client.login(**self.collaborator_credentials)
+        self.assertFalse(
+            CustomListPin.objects.filter(
+                user=self.collaborator,
+                custom_list=self.list,
+            ).exists(),
+        )
+
+    def test_pin_list_unauthorized(self):
+        """Test that a user without view access cannot pin the list."""
+        self.client.login(**self.outsider_credentials)
+        self.client.post(reverse("list_pin_toggle"), {"list_id": self.list.id})
+        self.assertFalse(
+            CustomListPin.objects.filter(
+                user=self.outsider,
+                custom_list=self.list,
+            ).exists(),
+        )
 
 
 class ListsModalViewTests(TestCase):

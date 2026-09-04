@@ -171,6 +171,7 @@ TEMPLATES = [
                 "app.context_processors.export_vars",
                 "app.context_processors.media_enums",
                 "app.context_processors.persistent_messages",
+                "lists.context_processors.pinned_lists",
                 "django.template.context_processors.request",
             ],
         },

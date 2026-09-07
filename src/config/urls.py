@@ -16,6 +16,7 @@ from health_check.views import HealthCheckView
 from redis.asyncio import Redis as RedisClient
 
 urlpatterns = [
+    path("api/", include("api.urls")),
     path("", include("app.urls")),
     path("", include("integrations.urls")),
     path("", include("users.urls")),

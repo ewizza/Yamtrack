@@ -5,7 +5,8 @@ from django.views.decorators.http import require_GET
 
 from api.auth import token_auth
 from app.models import BasicMedia, Sources, Status
-from users.models import MediaStatusChoices
+from app.providers import services, tmdb
+from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
 
 WATCHLIST_MEDIA_TYPES = ("tv", "movie")
 WATCHLIST_STATUSES = {Status.IN_PROGRESS, Status.PLANNING}
@@ -41,3 +42,36 @@ def watchlist(request):
             )
 
     return JsonResponse({"results": results})
+
+
+@token_auth
+@require_GET
+def providers(request, media_type, tmdb_id):
+    """Return TMDB watch-provider availability for a title, region-filtered."""
+    try:
+        media_metadata = services.get_media_metadata(
+            media_type,
+            tmdb_id,
+            Sources.TMDB.value,
+        )
+    except services.ProviderAPIError as error:
+        return JsonResponse({"detail": str(error)}, status=error.status_code or 502)
+
+    region = request.user.watch_provider_region
+    available = tmdb.filter_providers(media_metadata.get("providers"), region) or []
+
+    return JsonResponse(
+        {
+            "media_type": media_type,
+            "tmdb_id": tmdb_id,
+            "region_configured": region != WATCH_PROVIDER_REGION_UNSET,
+            "providers": [
+                {
+                    "id": provider.get("provider_id"),
+                    "name": provider.get("provider_name"),
+                    "logo": provider.get("image"),
+                }
+                for provider in available
+            ],
+        },
+    )

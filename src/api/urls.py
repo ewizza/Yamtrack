@@ -11,4 +11,9 @@ urlpatterns = [
         views.providers,
         name="api_providers",
     ),
+    path(
+        "media/<tv_movie_type:media_type>/<str:tmdb_id>/default-provider",
+        views.set_default_provider,
+        name="api_default_provider",
+    ),
 ]

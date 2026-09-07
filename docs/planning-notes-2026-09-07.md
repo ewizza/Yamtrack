@@ -41,12 +41,13 @@ Anything marked "not yet confirmed" is v1.5 work: install each app on the actual
 
 ## 4. Architecture
 
-**Three pieces, home-network only, no cloud/auth needed:**
+**Three pieces, home-network only, no cloud dependency:**
 
-1. **Yamtrack fork (backend)** — two small additions:
-   - `GET /api/watchlist` (or similar) — returns the user's tracked shows/movies with TMDB IDs and watch status.
-   - `GET /api/media/<id>/providers` — reuses existing `filter_providers()` logic, returns JSON list of provider names for that title (instead of only rendering to HTML).
-   - New field/table for **per-show default provider** (§5) — written by the TV app when Eric picks "always use this," read back on subsequent loads.
+1. **Yamtrack fork (backend)** — ✅ all three additions built on the `yamtv-api-additions` branch (see `yamtrack-api-additions-spec.md`), not yet merged/PR'd:
+   - `GET /api/watchlist` — returns the user's tracked shows/movies with TMDB IDs and watch status.
+   - `GET /api/media/<tv|movie>/<tmdb_id>/providers` — reuses existing `filter_providers()` logic, returns JSON list of providers for that title, plus the saved default (see below).
+   - `DefaultProvider` model + `PUT /api/media/<tv|movie>/<tmdb_id>/default-provider` for **per-show default provider** (§5) — written by the TV app when Eric picks "always use this," read back on subsequent loads.
+   - Auth: an `Authorization: Token <token>` header, reusing Yamtrack's existing per-user token (same one used for the Jellyfin/Plex/Emby webhooks) — not fully open on the LAN as originally sketched, but still no separate account/OAuth system for the TV app to deal with.
 
 2. **Android TV app (Compose for TV)**:
    - Home screen: grid of watchlist tiles (poster art from TMDB, same as Yamtrack already has).

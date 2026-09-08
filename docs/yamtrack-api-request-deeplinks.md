@@ -131,23 +131,27 @@ reasonable-sized chunk of Yamtrack work, not something YAM-TV is blocked on.
 
 ---
 
-## Resolution (2026-09-08)
+## Resolution (2026-09-08) — ✅ Built, committed, and deployed
 
-Planned as Milestone 5 in Yamtrack's own `yamtrack-api-additions-spec.md` (§5), not started yet. Answering the open questions above:
+Built as Milestone 5 in Yamtrack's own `yamtrack-api-additions-spec.md` (§5), on the `yamtv-api-additions` branch (commit `cde8e57d`), pushed to `origin` (Eric's fork), and rebuilt into the local Docker deployment the same day. Answering the open questions above:
 
-1. **Data source today**: confirmed the pessimistic branch — `filter_providers()` in `src/app/providers/tmdb.py` sources from TMDB's `watch/providers` wrapper, which only exposes one aggregate region-level JustWatch listing link, no per-offer deep links. A new data source is required.
-2. **Which JustWatch access**: going with the free unofficial `simple-justwatch-python-api` GraphQL client over the paid Partner API — reasonable for a single-user local deployment; accepted the "could break without notice" risk.
-3. **Caching**: yes — resolved JustWatch node IDs cached long-lived, per-region offer/deeplink maps cached ~7 days, reusing Yamtrack's existing Redis cache.
-4. **Region**: will follow the same region logic `filter_providers()` already uses.
+1. **Data source today**: confirmed the pessimistic branch — `filter_providers()` in `src/app/providers/tmdb.py` sources from TMDB's `watch/providers` wrapper, which only exposes one aggregate region-level JustWatch listing link, no per-offer deep links. A new data source was required.
+2. **Which JustWatch access**: used the free unofficial `simple-justwatch-python-api` GraphQL client over the paid Partner API — reasonable for a single-user local deployment; accepted the "could break without notice" risk.
+3. **Caching**: yes — resolved JustWatch node IDs cached indefinitely, per-region offer/deeplink maps cached 7 days, reusing Yamtrack's existing Redis cache.
+4. **Region**: follows the same region logic `filter_providers()` already uses.
 
-See the spec doc for the full design, including the still-open spike (TMDB vs JustWatch provider-ID reconciliation) to resolve during implementation.
+**The provider-ID reconciliation spike resolved better than expected**: JustWatch's own `package_id` for a platform (e.g. `8` for Netflix) was confirmed equal to TMDB's `provider_id` for the same platform against real titles — no name-based matching needed. And JustWatch search results carry TMDB's own id directly (`MediaEntry.tmdb_id`), so resolving a TMDB id to its JustWatch entry is an exact-id match, not the fuzzy title/year matching originally planned — eliminates the false-positive-match risk entirely. `GET /api/media/<media_type>/<tmdb_id>/providers` now returns exactly the shape requested above (`deeplink` on each provider and on `default_provider`, `null` when unavailable). See the spec doc's Milestone 5 section for the full implementation writeup.
 
 ---
 
-*Related, lower-priority ask already flagged in YAM-TV's `MILESTONES.md`
+**Bonus, bundled in as Milestone 6, also ✅ built and deployed (commit `7d92f292`)**: the related next-episode-badge ask below. `GET /api/watchlist` now includes a nullable `next_episode` field per TV show: `{"season": ..., "episode": ..., "air_date": ...}`. Better source than assumed below — it reuses Yamtrack's existing `Event` model (already TVMaze-corrected, backing the calendar/notifications feature) rather than TMDB's raw `next_episode_to_air`, so no new external API calls were needed.
+
+---
+
+*Original related, lower-priority ask flagged in YAM-TV's `MILESTONES.md`
 (M6): Yamtrack's own web UI shows a "next episode" badge (episode + air
 date) per show that YAM-TV would like to show on its grid tiles too — not
 yet confirmed whether that's available via any API field today. Different
 feature, mentioning here only because it's the same shape of ask (a Yamtrack
 API addition) and might be worth bundling into the same round of work if
-convenient.*
+convenient. (Resolved above — bundled in, built.)*

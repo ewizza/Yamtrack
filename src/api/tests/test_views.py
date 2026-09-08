@@ -1,14 +1,17 @@
 """Tests for the JSON API views."""
 
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from api.models import DefaultProvider
 from app.models import TV, Item, MediaTypes, Movie, Sources, Status
 from app.providers import services
+from events.models import Event, SentinelDatetime
 
 NETFLIX_PROVIDER = {
     "provider_id": 8,
@@ -134,8 +137,20 @@ class WatchlistViewTest(TestCase):
                 "title": "Test TV Show",
                 "image": "http://example.com/tv.jpg",
                 "status": Status.IN_PROGRESS.value,
+                "next_episode": None,
             },
         )
+
+    def test_movie_result_has_no_next_episode_field(self):
+        """next_episode is a TV-only concept; movie results don't carry it."""
+        response = self.client.get(
+            self.url,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        results = response.json()["results"]
+        movie_result = next(r for r in results if r["title"] == "Test Movie")
+        self.assertNotIn("next_episode", movie_result)
 
     def test_missing_token_is_unauthorized(self):
         """A request with no Authorization header is rejected."""
@@ -161,6 +176,147 @@ class WatchlistViewTest(TestCase):
 
         titles = {result["title"] for result in response.json()["results"]}
         self.assertNotIn("Other User Movie", titles)
+
+
+class WatchlistNextEpisodeTest(TestCase):
+    """Test the next_episode field on GET /api/watchlist TV results."""
+
+    def setUp(self):
+        """Set up an authenticated user with one tracked TV show."""
+        self.credentials = {"username": "test", "password": "testpass"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.url = reverse("api_watchlist")
+
+        self.tv_item = Item.objects.create(
+            media_id="1668",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Test TV Show",
+            image="http://example.com/tv.jpg",
+        )
+        TV.objects.create(
+            item=self.tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+    def _season_item(self, season_number):
+        """Create (or fetch) the season Item for the tracked show."""
+        item, _ = Item.objects.get_or_create(
+            media_id=self.tv_item.media_id,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            season_number=season_number,
+            defaults={"title": self.tv_item.title},
+        )
+        return item
+
+    def _next_episode(self, response=None):
+        """Return the next_episode field from the watchlist response."""
+        response = response or self.client.get(
+            self.url,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+        results = response.json()["results"]
+        tv_result = next(r for r in results if r["media_id"] == "1668")
+        return tv_result["next_episode"]
+
+    def test_returns_the_earliest_upcoming_episode(self):
+        """The soonest future episode wins, not just any future episode."""
+        season = self._season_item(1)
+        Event.objects.create(
+            item=season,
+            content_number=5,
+            datetime=timezone.now() + timedelta(days=10),
+        )
+        Event.objects.create(
+            item=season,
+            content_number=3,
+            datetime=timezone.now() + timedelta(days=2),
+        )
+
+        next_episode = self._next_episode()
+
+        self.assertEqual(next_episode["season"], 1)
+        self.assertEqual(next_episode["episode"], 3)
+        self.assertEqual(
+            next_episode["air_date"],
+            (timezone.now() + timedelta(days=2)).date().isoformat(),
+        )
+
+    def test_ignores_past_episodes(self):
+        """An already-aired episode isn't reported as next."""
+        season = self._season_item(1)
+        Event.objects.create(
+            item=season,
+            content_number=1,
+            datetime=timezone.now() - timedelta(days=5),
+        )
+
+        self.assertIsNone(self._next_episode())
+
+    def test_ignores_specials(self):
+        """Season 0 (specials) doesn't count as the next episode."""
+        specials = self._season_item(0)
+        Event.objects.create(
+            item=specials,
+            content_number=1,
+            datetime=timezone.now() + timedelta(days=1),
+        )
+
+        self.assertIsNone(self._next_episode())
+
+    def test_ignores_unknown_air_date_sentinel(self):
+        """A confirmed-but-undated future episode isn't reported as a real date."""
+        season = self._season_item(1)
+        Event.objects.create(
+            item=season,
+            content_number=1,
+            datetime=SentinelDatetime.max_datetime(),
+        )
+
+        self.assertIsNone(self._next_episode())
+
+    def test_ignores_season_level_event_with_no_episode_number(self):
+        """A season-level event (no content_number) isn't a specific episode."""
+        season = self._season_item(1)
+        Event.objects.create(
+            item=season,
+            content_number=None,
+            datetime=timezone.now() + timedelta(days=1),
+        )
+
+        self.assertIsNone(self._next_episode())
+
+    def test_next_episode_does_not_leak_across_shows(self):
+        """One show's next episode doesn't get attributed to another."""
+        other_tv_item = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Other TV Show",
+            image="http://example.com/other-tv.jpg",
+        )
+        TV.objects.create(
+            item=other_tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        other_season = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            season_number=1,
+            title="Other TV Show",
+        )
+        Event.objects.create(
+            item=other_season,
+            content_number=1,
+            datetime=timezone.now() + timedelta(days=1),
+        )
+
+        # The tracked show in setUp has no events of its own.
+        self.assertIsNone(self._next_episode())
 
 
 class ProvidersViewTest(TestCase):

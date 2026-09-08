@@ -3,16 +3,63 @@
 import json
 
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods
 
 from api.auth import token_auth
 from api.models import DefaultProvider
-from app.models import BasicMedia, Item, Sources, Status
+from app.models import BasicMedia, Item, MediaTypes, Sources, Status
 from app.providers import justwatch, services, tmdb
+from events.models import Event, SentinelDatetime
 from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
 
 WATCHLIST_MEDIA_TYPES = ("tv", "movie")
 WATCHLIST_STATUSES = {Status.IN_PROGRESS, Status.PLANNING}
+
+
+def _next_episodes(tv_media_list, source):
+    """Return {media_id: {"season", "episode", "air_date"}} - each show's next episode.
+
+    Mirrors BasicMedia.objects._annotate_tv_released_episodes()'s season-Item
+    traversal (an episode's Event is attached to its *season* Item, not the show's
+    own Item), but looks forward instead of back: the earliest not-yet-aired
+    episode per show. Batched as one query across the whole list to avoid N+1.
+    Excludes the far-future sentinel datetime used for episodes with no confirmed
+    air date yet - that's not a real date to hand back to a client.
+    """
+    if not tv_media_list:
+        return {}
+
+    media_ids = [media.item.media_id for media in tv_media_list]
+
+    upcoming_events = (
+        Event.objects.filter(
+            item__media_id__in=media_ids,
+            item__source=source,
+            item__media_type=MediaTypes.SEASON.value,
+            item__season_number__gt=0,
+            content_number__isnull=False,
+            datetime__gte=timezone.now(),
+        )
+        .exclude(datetime=SentinelDatetime.max_datetime())
+        .select_related("item")
+        .order_by("datetime")
+    )
+
+    next_episodes = {}
+    for event in upcoming_events:
+        media_id = event.item.media_id
+        # Already ordered by datetime - the first event seen per show is its
+        # earliest upcoming episode.
+        next_episodes.setdefault(
+            media_id,
+            {
+                "season": event.item.season_number,
+                "episode": event.content_number,
+                "air_date": event.datetime.date().isoformat(),
+            },
+        )
+    return next_episodes
 
 
 @token_auth
@@ -28,21 +75,26 @@ def watchlist(request):
             status_filter=MediaStatusChoices.ALL,
             sort_filter=None,
         )
-        for media in media_list:
-            if media.item.source != Sources.TMDB:
-                continue
-            if media.status not in WATCHLIST_STATUSES:
-                continue
+        tracked = [
+            media
+            for media in media_list
+            if media.item.source == Sources.TMDB and media.status in WATCHLIST_STATUSES
+        ]
 
-            results.append(
-                {
-                    "media_type": media_type,
-                    "media_id": media.item.media_id,
-                    "title": media.item.title,
-                    "image": media.item.image,
-                    "status": media.status,
-                },
-            )
+        is_tv = media_type == MediaTypes.TV.value
+        next_episodes = _next_episodes(tracked, Sources.TMDB.value) if is_tv else {}
+
+        for media in tracked:
+            result = {
+                "media_type": media_type,
+                "media_id": media.item.media_id,
+                "title": media.item.title,
+                "image": media.item.image,
+                "status": media.status,
+            }
+            if is_tv:
+                result["next_episode"] = next_episodes.get(media.item.media_id)
+            results.append(result)
 
     return JsonResponse({"results": results})
 

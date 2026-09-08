@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ Milestones 1-3 built and pushed. ✅ Milestone 5 (deep links) built, not yet pushed/tested end-to-end. Milestone 6 (next-episode badge) still planned but not started (see §5). Not yet merged to `dev` or opened as a PR — pending end-to-end testing against the Docker deployment.
+**Status**: ✅ Milestones 1-3 built and pushed to `origin/yamtv-api-additions`. ✅ Milestones 5 (deep links) and 6 (next-episode badge) built and committed locally, not yet pushed or tested end-to-end. Not yet merged to `dev` or opened as a PR — pending end-to-end testing against the Docker deployment.
 **Last updated**: 2026-09-08
 
 ## 1. Context
@@ -82,10 +82,14 @@ Built:
 
 Not yet pushed to the branch or tested end-to-end against the Docker deployment — next step before that's done.
 
-**Milestone 6 — Next-episode badge** (bundled with Milestone 5; planned, not started)
+**Milestone 6 — Next-episode badge** (bundled with Milestone 5) ✅ Built 2026-09-08
 
-Adds next-episode info (season, episode, air date) per TV show to `GET /api/watchlist`, for the "next episode" badge on YAM-TV's grid tiles (flagged as a lower-priority related ask in the deep-links request doc).
+Adds a nullable `next_episode` field (`{"season", "episode", "air_date"}`) per TV show to `GET /api/watchlist`, for the "next episode" badge on YAM-TV's grid tiles (flagged as a lower-priority related ask in the deep-links request doc). Movie results don't carry the field at all.
 
-Better source than first guessed: rather than re-deriving from TMDB's raw `next_episode_to_air` (no TVMaze correction), reuse Yamtrack's existing `Event` model (`src/events/calendar/tv.py`), which already tracks accurate per-episode air dates (TMDB + TVMaze-corrected, refreshed by the existing Celery calendar sync) for the calendar feature. Pure DB read for this milestone — no new external API calls.
+Better source than first guessed: rather than re-deriving from TMDB's raw `next_episode_to_air` (no TVMaze correction), reuses Yamtrack's existing `Event` model, which already tracks accurate per-episode air dates (TMDB + TVMaze-corrected, refreshed by the existing Celery calendar sync) for the calendar feature. Pure DB read — no new external API calls.
 
-Implementation: for each TV item in the watchlist response, find the earliest future `Event` for that show's episode-type items (`datetime__gte=now`, ordered by `datetime`) and include a nullable `{"season": ..., "episode": ..., "air_date": ...}`. Batch this as one query across the whole watchlist rather than per-item, to avoid N+1.
+One correction from the original plan: `Event.item` is a TV show's **season** `Item`, not an episode-type `Item` as first assumed (confirmed by reading `src/events/calendar/tv.py` and the existing `BasicMedia.objects._annotate_tv_released_episodes()`, which does the same season-Item traversal for *past* episodes) — `event.item.season_number` gives the season, `event.content_number` gives the episode number within it.
+
+Built: `_next_episodes()` in `src/api/views.py`, batched as one query across the whole watchlist (`item__media_id__in=[...]`) rather than per-show, mirroring `_annotate_tv_released_episodes()`'s query shape but forward-looking (`datetime__gte=now`, earliest instead of latest). Excludes season 0 (specials, matching that same existing convention), season-level events with no episode number, and the far-future sentinel datetime `Event` uses for episodes with no confirmed air date yet (`SentinelDatetime.max_datetime()` — that's a placeholder, not a real date to hand back to a client).
+
+Tests added to `src/api/tests/test_views.py` (`WatchlistNextEpisodeTest`): earliest-episode-wins, past episodes ignored, specials ignored, season-level (no episode number) events ignored, the unknown-air-date sentinel ignored, and no cross-show leakage. Full suite run clean against the pre-existing baseline.

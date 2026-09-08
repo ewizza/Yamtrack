@@ -8,7 +8,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from api.auth import token_auth
 from api.models import DefaultProvider
 from app.models import BasicMedia, Item, Sources, Status
-from app.providers import services, tmdb
+from app.providers import justwatch, services, tmdb
 from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
 
 WATCHLIST_MEDIA_TYPES = ("tv", "movie")
@@ -47,12 +47,15 @@ def watchlist(request):
     return JsonResponse({"results": results})
 
 
-def _get_available_providers(media_type, tmdb_id, region):
+def _get_available_providers(media_type, tmdb_id, region, *, include_deeplinks=True):
     """Return the region-filtered provider list for a title, or an error response.
 
-    Returns a ``(providers, error_response)`` tuple: on success ``error_response``
-    is ``None``. On an upstream failure ``providers`` is ``None`` and
-    ``error_response`` is a ready-to-return ``JsonResponse``.
+    Returns a ``(providers, deeplinks, error_response)`` tuple: on success
+    ``error_response`` is ``None``. On an upstream failure ``providers`` and
+    ``deeplinks`` are ``None`` and ``error_response`` is a ready-to-return
+    ``JsonResponse``. ``deeplinks`` is a ``{provider_id: url}`` map - pass
+    ``include_deeplinks=False`` to skip the JustWatch lookup entirely for
+    callers (like the default-provider write) that don't need it.
     """
     try:
         media_metadata = services.get_media_metadata(
@@ -65,18 +68,29 @@ def _get_available_providers(media_type, tmdb_id, region):
             {"detail": str(error)},
             status=error.status_code or 502,
         )
-        return None, response
+        return None, None, response
 
     available = tmdb.filter_providers(media_metadata.get("providers"), region) or []
+
+    deeplinks = {}
+    if include_deeplinks and available:
+        deeplinks = justwatch.get_deeplinks(
+            media_type,
+            tmdb_id,
+            media_metadata.get("title"),
+            region,
+        )
+
     providers = [
         {
             "id": provider.get("provider_id"),
             "name": provider.get("provider_name"),
             "logo": provider.get("image"),
+            "deeplink": deeplinks.get(provider.get("provider_id")),
         }
         for provider in available
     ]
-    return providers, None
+    return providers, deeplinks, None
 
 
 def _get_item(media_type, tmdb_id):
@@ -88,12 +102,16 @@ def _get_item(media_type, tmdb_id):
     ).first()
 
 
-def _serialize_default_provider(item, user):
+def _serialize_default_provider(item, user, deeplinks):
     """Return the user's saved default provider for an item, or None."""
     preference = DefaultProvider.objects.filter(user=user, item=item).first()
     if preference is None:
         return None
-    return {"id": preference.provider_id, "name": preference.provider_name}
+    return {
+        "id": preference.provider_id,
+        "name": preference.provider_name,
+        "deeplink": deeplinks.get(preference.provider_id),
+    }
 
 
 @token_auth
@@ -104,12 +122,18 @@ def providers(request, media_type, tmdb_id):
     Region-filtered using the authenticated user's watch_provider_region.
     """
     region = request.user.watch_provider_region
-    available, error_response = _get_available_providers(media_type, tmdb_id, region)
+    available, deeplinks, error_response = _get_available_providers(
+        media_type,
+        tmdb_id,
+        region,
+    )
     if error_response is not None:
         return error_response
 
     item = _get_item(media_type, tmdb_id)
-    default_provider = _serialize_default_provider(item, request.user) if item else None
+    default_provider = (
+        _serialize_default_provider(item, request.user, deeplinks) if item else None
+    )
 
     return JsonResponse(
         {
@@ -163,7 +187,12 @@ def set_default_provider(request, media_type, tmdb_id):
         return JsonResponse({"default_provider": None})
 
     region = request.user.watch_provider_region
-    available, error_response = _get_available_providers(media_type, tmdb_id, region)
+    available, _deeplinks, error_response = _get_available_providers(
+        media_type,
+        tmdb_id,
+        region,
+        include_deeplinks=False,
+    )
     if error_response is not None:
         return error_response
 

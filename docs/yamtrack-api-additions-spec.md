@@ -2,8 +2,8 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ All 3 milestones built, tested, and pushed to the `yamtv-api-additions` branch (`src/api/` app). Milestone 4 remains optional/deferred. Not yet merged to `dev` or opened as a PR — pending end-to-end testing against the Docker deployment.
-**Last updated**: 2026-09-07
+**Status**: ✅ Milestones 1-3 built and pushed. ✅ Milestone 5 (deep links) built, not yet pushed/tested end-to-end. Milestone 6 (next-episode badge) still planned but not started (see §5). Not yet merged to `dev` or opened as a PR — pending end-to-end testing against the Docker deployment.
+**Last updated**: 2026-09-08
 
 ## 1. Context
 
@@ -62,3 +62,30 @@ All three milestones are on the `yamtv-api-additions` branch, fully tested (unit
 
 **Milestone 4 (optional, only if needed) — Auth hardening / polish**
 Not started, and not currently planned — only pursue this if the token-header auth from §4 turns out to be insufficient once the app is actually in use, or if real usage surfaces a need (e.g. filtering by watch-status, batching). Not required for a working v1 — don't build ahead of an actual need.
+
+**Milestone 5 — Per-provider deep links** (requested in `yamtrack-api-request-deeplinks.md`) ✅ Built 2026-09-08
+
+Adds a nullable `deeplink` field to each provider in `GET /api/media/<tv|movie>/<tmdb_id>/providers` (and to `default_provider`), so YAM-TV can launch straight to a title's page in the streaming app instead of just the app's home screen.
+
+Investigated: Yamtrack's provider data came from TMDB's `watch/providers` (`filter_providers()` in `src/app/providers/tmdb.py`), which only exposes one aggregate region-level JustWatch listing link — no per-offer deep links. Getting real per-offer links needed a **new data source**. Used the unofficial `simple-justwatch-python-api` PyPI package (free, GraphQL-based JustWatch client) rather than JustWatch's paid Partner API — appropriate for a single-user local deployment; accepted risk that it's unofficial/reverse-engineered and could break without notice.
+
+**Spike results (better than assumed when this milestone was planned)**:
+- The library's `search()` results carry TMDB's own id (`MediaEntry.tmdb_id`), so matching a TMDB id to its JustWatch entry is an **exact-id match on search results**, not fuzzy title/year matching as originally planned — eliminates the false-positive-match risk entirely.
+- Confirmed against real titles that JustWatch's own `package_id` for a platform (e.g. `8` for Netflix) equals TMDB's `provider_id` for the same platform — no name/technical_name-based reconciliation needed. Matching by that numeric id also naturally excludes near-duplicate JustWatch packages for the same platform (e.g. "Netflix Standard with Ads" carries a different `package_id`).
+
+Built:
+1. Added `simple-justwatch-python-api` to `pyproject.toml`.
+2. New `src/app/providers/justwatch.py`: `get_deeplinks(media_type, tmdb_id, title, region)` returns `{tmdb_provider_id: url}`, filtered to `FLATRATE`/`FREE` offers (matching what `filter_providers()` already surfaces — rent/buy is out of scope). Any failure (network, no match, library break) is caught and degrades to `{}` — never surfaces as a 500 on `/providers`.
+3. Caching (reuses the existing Redis cache): resolved `{media_type, tmdb_id} -> justwatch_node_id` (or a "no match" sentinel) cached indefinitely; `{node_id, region} -> {provider_id: url}` cached 7 days.
+4. Wired into `_get_available_providers()` (`src/api/views.py`, now returns a `(providers, deeplinks, error_response)` tuple) so both `providers` and `default_provider` carry `deeplink`. The JustWatch lookup is skipped entirely when there's nothing to look up (no available providers) or when the caller doesn't need it (`include_deeplinks=False`, used by the `default-provider` write path, which only needs availability, not links).
+5. Tests: `src/app/tests/providers/test_justwatch.py` (mocked JustWatch client, no live calls) plus updated `src/api/tests/test_views.py` for the new response shape. Full suite run clean against the pre-existing baseline (no new failures).
+
+Not yet pushed to the branch or tested end-to-end against the Docker deployment — next step before that's done.
+
+**Milestone 6 — Next-episode badge** (bundled with Milestone 5; planned, not started)
+
+Adds next-episode info (season, episode, air date) per TV show to `GET /api/watchlist`, for the "next episode" badge on YAM-TV's grid tiles (flagged as a lower-priority related ask in the deep-links request doc).
+
+Better source than first guessed: rather than re-deriving from TMDB's raw `next_episode_to_air` (no TVMaze correction), reuse Yamtrack's existing `Event` model (`src/events/calendar/tv.py`), which already tracks accurate per-episode air dates (TMDB + TVMaze-corrected, refreshed by the existing Celery calendar sync) for the calendar feature. Pure DB read for this milestone — no new external API calls.
+
+Implementation: for each TV item in the watchlist response, find the earliest future `Event` for that show's episode-type items (`datetime__gte=now`, ordered by `datetime`) and include a nullable `{"season": ..., "episode": ..., "air_date": ...}`. Batch this as one query across the whole watchlist rather than per-item, to avoid N+1.

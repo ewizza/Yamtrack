@@ -178,12 +178,18 @@ class ProvidersViewTest(TestCase):
             kwargs={"media_type": media_type, "tmdb_id": tmdb_id},
         )
 
+    @patch("api.views.justwatch.get_deeplinks")
     @patch("api.views.services.get_media_metadata")
-    def test_returns_providers_for_configured_region(self, mock_get_media_metadata):
+    def test_returns_providers_for_configured_region(
+        self,
+        mock_get_media_metadata,
+        mock_get_deeplinks,
+    ):
         """A configured region returns the filtered, region-specific providers."""
         self.user.watch_provider_region = "US"
         self.user.save()
         mock_get_media_metadata.return_value = {
+            "title": "Test Movie",
             "providers": {
                 "US": {
                     "flatrate": [
@@ -196,6 +202,9 @@ class ProvidersViewTest(TestCase):
                     ],
                 },
             },
+        }
+        mock_get_deeplinks.return_value = {
+            8: "https://www.netflix.com/title/70143836",
         }
 
         response = self.client.get(
@@ -213,13 +222,53 @@ class ProvidersViewTest(TestCase):
                     "id": 8,
                     "name": "Netflix",
                     "logo": "https://image.tmdb.org/t/p/w500/netflix.jpg",
+                    "deeplink": "https://www.netflix.com/title/70143836",
                 },
             ],
         )
         self.assertIsNone(data["default_provider"])
 
+    @patch("api.views.justwatch.get_deeplinks")
     @patch("api.views.services.get_media_metadata")
-    def test_includes_saved_default_provider(self, mock_get_media_metadata):
+    def test_provider_deeplink_is_null_when_unavailable(
+        self,
+        mock_get_media_metadata,
+        mock_get_deeplinks,
+    ):
+        """A provider with no matching JustWatch offer gets a null deeplink."""
+        self.user.watch_provider_region = "US"
+        self.user.save()
+        mock_get_media_metadata.return_value = {
+            "title": "Test Movie",
+            "providers": {
+                "US": {
+                    "flatrate": [
+                        {
+                            "provider_id": 8,
+                            "provider_name": "Netflix",
+                            "logo_path": "/netflix.jpg",
+                            "display_priority": 0,
+                        },
+                    ],
+                },
+            },
+        }
+        mock_get_deeplinks.return_value = {}
+
+        response = self.client.get(
+            self._url(),
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertIsNone(response.json()["providers"][0]["deeplink"])
+
+    @patch("api.views.justwatch.get_deeplinks")
+    @patch("api.views.services.get_media_metadata")
+    def test_includes_saved_default_provider(
+        self,
+        mock_get_media_metadata,
+        mock_get_deeplinks,
+    ):
         """A saved preference is included, and stays private to its owner."""
         item = Item.objects.create(
             media_id="238",
@@ -236,7 +285,8 @@ class ProvidersViewTest(TestCase):
         )
         other_credentials = {"username": "other", "password": "testpass"}
         other_user = get_user_model().objects.create_user(**other_credentials)
-        mock_get_media_metadata.return_value = {"providers": {}}
+        mock_get_media_metadata.return_value = {"title": "Test Movie", "providers": {}}
+        mock_get_deeplinks.return_value = {}
 
         response = self.client.get(
             self._url(),
@@ -249,7 +299,7 @@ class ProvidersViewTest(TestCase):
 
         self.assertEqual(
             response.json()["default_provider"],
-            {"id": 8, "name": "Netflix"},
+            {"id": 8, "name": "Netflix", "deeplink": None},
         )
         self.assertIsNone(other_response.json()["default_provider"])
 

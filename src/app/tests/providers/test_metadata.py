@@ -72,6 +72,11 @@ class Metadata(TestCase):
         self.assertEqual(response["details"]["first_air_date"], "2008-01-20")
         self.assertEqual(response["details"]["status"], "Ended")
         self.assertEqual(response["details"]["episodes"], 62)
+        self.assertTrue(
+            response["backdrop"].startswith(
+                f"https://image.tmdb.org/t/p/{tmdb.BACKDROP_SIZE}/",
+            ),
+        )
 
     @patch("app.providers.tmdb.timezone.localdate")
     @patch("app.providers.tmdb.services.api_request")
@@ -405,6 +410,11 @@ class Metadata(TestCase):
         self.assertEqual(response["title"], "Perfect Blue")
         self.assertEqual(response["details"]["release_date"], "1998-02-28")
         self.assertEqual(response["details"]["status"], "Released")
+        self.assertTrue(
+            response["backdrop"].startswith(
+                f"https://image.tmdb.org/t/p/{tmdb.BACKDROP_SIZE}/",
+            ),
+        )
 
     @patch("requests.Session.get")
     def test_movie_unknown(self, mock_data):
@@ -417,6 +427,7 @@ class Metadata(TestCase):
         response = tmdb.movie("0")
         self.assertEqual(response["title"], "Unknown Movie")
         self.assertEqual(response["image"], settings.IMG_NONE)
+        self.assertEqual(response["backdrop"], settings.IMG_NONE)
         self.assertEqual(response["synopsis"], "No synopsis available.")
         self.assertEqual(response["details"]["release_date"], None)
         self.assertEqual(response["details"]["runtime"], None)
@@ -814,3 +825,48 @@ class Metadata(TestCase):
             hardcover.handle_error(error)
 
         self.assertEqual(cm.exception.provider, Sources.HARDCOVER.value)
+
+
+class GetBackdropUrl(TestCase):
+    """Test the backdrop-picking logic used by tmdb.movie()/tmdb.tv()."""
+
+    def test_prefers_highest_vote_average_backdrop(self):
+        """Among the (already language-filtered) candidates, the best-rated wins."""
+        response = {
+            "backdrop_path": "/default.jpg",
+            "images": {
+                "backdrops": [
+                    {"file_path": "/low.jpg", "vote_average": 2.0},
+                    {"file_path": "/high.jpg", "vote_average": 8.5},
+                ],
+            },
+        }
+
+        self.assertEqual(
+            tmdb.get_backdrop_url(response),
+            tmdb.get_image_url("/high.jpg", tmdb.BACKDROP_SIZE),
+        )
+
+    def test_falls_back_to_default_backdrop_when_no_textless_candidate(self):
+        """No textless/language-neutral backdrop -> the plain default, not null."""
+        response = {"backdrop_path": "/default.jpg", "images": {"backdrops": []}}
+
+        self.assertEqual(
+            tmdb.get_backdrop_url(response),
+            tmdb.get_image_url("/default.jpg", tmdb.BACKDROP_SIZE),
+        )
+
+    def test_null_when_tmdb_has_no_backdrop_at_all(self):
+        """No default path and no images -> null, not an error."""
+        response = {"backdrop_path": None, "images": {}}
+
+        self.assertEqual(tmdb.get_backdrop_url(response), settings.IMG_NONE)
+
+    def test_missing_images_key_degrades_gracefully(self):
+        """No 'images' key at all still resolves via the plain default path."""
+        response = {"backdrop_path": "/default.jpg"}
+
+        self.assertEqual(
+            tmdb.get_backdrop_url(response),
+            tmdb.get_image_url("/default.jpg", tmdb.BACKDROP_SIZE),
+        )

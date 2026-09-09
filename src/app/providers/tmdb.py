@@ -16,6 +16,10 @@ base_params = {
     "api_key": settings.TMDB_API,
     "language": settings.TMDB_LANG,
 }
+BACKDROP_SIZE = "w1280"  # reasonable default for a 1080p TV hero banner
+# Textless (or language-neutral) backdrops only - avoids double title text
+# when a caller overlays its own title treatment on top. See get_backdrop_url().
+BACKDROP_IMAGE_LANGUAGES = "en,null"
 
 
 def handle_error(error):
@@ -158,10 +162,17 @@ def movie(media_id):
 
     if data is None:
         url = f"{base_url}/movie/{media_id}"
-        appends = ["recommendations", "external_ids", "credits", "watch/providers"]
+        appends = [
+            "recommendations",
+            "external_ids",
+            "credits",
+            "watch/providers",
+            "images",
+        ]
         params = {
             **base_params,
             "append_to_response": ",".join(appends),
+            "include_image_language": BACKDROP_IMAGE_LANGUAGES,
         }
 
         try:
@@ -217,6 +228,7 @@ def movie(media_id):
             "title": response["title"],
             "max_progress": 1,
             "image": get_image_url(response["poster_path"]),
+            "backdrop": get_backdrop_url(response),
             "synopsis": get_synopsis(response["overview"]),
             "genres": get_genres(response["genres"]),
             "score": get_score(response["vote_average"]),
@@ -289,7 +301,7 @@ def enrich_season_with_tv_data(season_data, tv_data, media_id, season_number):
 def fetch_and_cache_seasons(media_id, season_numbers, tv_data):
     """Fetch uncached seasons from API and cache them."""
     url = f"{base_url}/tv/{media_id}"
-    base_append = "recommendations,external_ids,watch/providers"
+    base_append = "recommendations,external_ids,watch/providers,images"
     max_seasons_per_request = 8
     fetched_tv_data = tv_data
     result_data = {}
@@ -306,6 +318,7 @@ def fetch_and_cache_seasons(media_id, season_numbers, tv_data):
         params = {
             **base_params,
             "append_to_response": f"{base_append},{append_text}",
+            "include_image_language": BACKDROP_IMAGE_LANGUAGES,
         }
 
         try:
@@ -393,7 +406,8 @@ def tv(media_id):
         url = f"{base_url}/tv/{media_id}"
         params = {
             **base_params,
-            "append_to_response": "recommendations,external_ids,watch/providers",
+            "append_to_response": "recommendations,external_ids,watch/providers,images",
+            "include_image_language": BACKDROP_IMAGE_LANGUAGES,
         }
 
         try:
@@ -425,6 +439,7 @@ def process_tv(response):
         "title": response["name"],
         "max_progress": num_episodes,
         "image": get_image_url(response["poster_path"]),
+        "backdrop": get_backdrop_url(response),
         "synopsis": get_synopsis(response["overview"]),
         "genres": get_genres(response["genres"]),
         "score": get_score(response["vote_average"]),
@@ -509,13 +524,38 @@ def get_format(media_type):
     return "Movie"
 
 
-def get_image_url(path):
+def get_image_url(path, size="w500"):
     """Return the image URL for the media."""
     # when no image, value from response is null
     # e.g movie: 445290
     if path:
-        return f"https://image.tmdb.org/t/p/w500{path}"
+        return f"https://image.tmdb.org/t/p/{size}{path}"
     return settings.IMG_NONE
+
+
+def get_backdrop_url(response):
+    """Return the best available backdrop image URL for a movie/TV response.
+
+    Prefers a textless (language-neutral) backdrop over TMDB's plain default
+    ``backdrop_path`` - the default can have another language's title
+    treatment baked into the image, which double-shows when a caller (e.g.
+    a hero banner) overlays its own title text on top. ``movie()``/``tv()``
+    append ``images`` to the same request with
+    ``include_image_language=BACKDROP_IMAGE_LANGUAGES`` (``"en,null"``) so
+    the candidates in ``images.backdrops`` are already language-filtered -
+    no extra TMDB call needed, just more keys read off the same cached
+    response already fetched for everything else. Picks
+    the highest-``vote_average`` candidate; falls back to the plain default
+    when no textless backdrop exists at all (rare, but possible for an
+    obscure title); ``None`` only when TMDB has no backdrop art whatsoever.
+    """
+    backdrops = (response.get("images") or {}).get("backdrops") or []
+    if backdrops:
+        best = max(backdrops, key=lambda backdrop: backdrop.get("vote_average") or 0)
+        path = best.get("file_path")
+    else:
+        path = response.get("backdrop_path")
+    return get_image_url(path, BACKDROP_SIZE)
 
 
 def get_title(response):

@@ -1,6 +1,7 @@
 """JSON API views for companion apps (e.g. the YAM-TV launcher)."""
 
 import json
+import logging
 
 from django.apps import apps
 from django.http import JsonResponse
@@ -13,6 +14,8 @@ from app.models import BasicMedia, Item, MediaTypes, Sources, Status
 from app.providers import justwatch, services, tmdb
 from events.models import Event, SentinelDatetime
 from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
+
+logger = logging.getLogger(__name__)
 
 WATCHLIST_MEDIA_TYPES = ("tv", "movie")
 DEFAULT_WATCHLIST_STATUSES = {Status.IN_PROGRESS.value, Status.PLANNING.value}
@@ -78,6 +81,34 @@ def _last_activity(media):
     return (media.progressed_at or media.created_at).isoformat()
 
 
+def _backdrop_url(media_type, media_id, source):
+    """Return a title's backdrop URL, or None if it can't be resolved.
+
+    Reads the ``backdrop`` field ``tmdb.tv()``/``tmdb.movie()`` now resolve
+    (a textless backdrop, preferred, or TMDB's plain default) straight off
+    ``services.get_media_metadata()``'s cached response - the same 24h
+    Redis cache the providers endpoint already rides. TV shows get that
+    cache warmed daily regardless of whether the watchlist endpoint is
+    ever polled, since ``events/calendar/tv.py``'s ``reload_calendar`` job
+    already calls ``tmdb.tv()`` for every tracked show; movies aren't
+    covered by that job, so a movie's backdrop lookup may occasionally be
+    a fresh TMDB fetch here instead of a cache hit. Either way, a failure
+    degrades this one field to ``None`` rather than failing the whole
+    watchlist response - same treatment ``justwatch.get_deeplinks()``
+    already gets for the providers endpoint.
+    """
+    try:
+        media_metadata = services.get_media_metadata(media_type, media_id, source)
+    except services.ProviderAPIError:
+        logger.warning(
+            "Failed to fetch backdrop metadata for %s %s",
+            media_type,
+            media_id,
+        )
+        return None
+    return media_metadata.get("backdrop")
+
+
 def _parse_watchlist_statuses(request):
     """Parse the ``?status=`` query param into a set of Status values, or an error.
 
@@ -138,6 +169,11 @@ def watchlist(request):
                 "media_id": media.item.media_id,
                 "title": media.item.title,
                 "image": media.item.image,
+                "backdrop_url": _backdrop_url(
+                    media_type,
+                    media.item.media_id,
+                    Sources.TMDB.value,
+                ),
                 "status": media.status,
                 "last_activity": _last_activity(media),
             }

@@ -32,7 +32,21 @@ class WatchlistViewTest(TestCase):
     """Test the GET /api/watchlist endpoint."""
 
     def setUp(self):
-        """Set up a user with a mix of tracked items."""
+        """Set up a user with a mix of tracked items.
+
+        Patches ``_backdrop_url()`` directly rather than the underlying
+        ``services.get_media_metadata()`` it calls - that function is shared
+        with ``Movie.save()``'s own status-completion side effect (this
+        setUp creates a Completed movie below), and mocking it at the
+        module level would break that unrelated code path too.
+        """
+        patcher = patch("api.views._backdrop_url")
+        self.mock_backdrop_url = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.mock_backdrop_url.return_value = (
+            "https://image.tmdb.org/t/p/w1280/backdrop.jpg"
+        )
+
         self.credentials = {"username": "test", "password": "testpass"}
         self.user = get_user_model().objects.create_user(**self.credentials)
         self.other_credentials = {"username": "other", "password": "testpass"}
@@ -139,6 +153,7 @@ class WatchlistViewTest(TestCase):
                 "media_id": "1668",
                 "title": "Test TV Show",
                 "image": "http://example.com/tv.jpg",
+                "backdrop_url": "https://image.tmdb.org/t/p/w1280/backdrop.jpg",
                 "status": Status.IN_PROGRESS.value,
                 "next_episode": None,
             },
@@ -230,6 +245,11 @@ class WatchlistNextEpisodeTest(TestCase):
 
     def setUp(self):
         """Set up an authenticated user with one tracked TV show."""
+        patcher = patch("api.views._backdrop_url")
+        self.mock_backdrop_url = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.mock_backdrop_url.return_value = None
+
         self.credentials = {"username": "test", "password": "testpass"}
         self.user = get_user_model().objects.create_user(**self.credentials)
         self.url = reverse("api_watchlist")
@@ -371,6 +391,11 @@ class WatchlistLastActivityTest(TestCase):
 
     def setUp(self):
         """Set up an authenticated user and the watchlist URL."""
+        patcher = patch("api.views._backdrop_url")
+        self.mock_backdrop_url = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.mock_backdrop_url.return_value = None
+
         self.credentials = {"username": "test", "password": "testpass"}
         self.user = get_user_model().objects.create_user(**self.credentials)
         self.url = reverse("api_watchlist")
@@ -457,6 +482,78 @@ class WatchlistLastActivityTest(TestCase):
         movie.save()
 
         self.assertEqual(self._last_activity("Test Movie"), before)
+
+
+class WatchlistBackdropTest(TestCase):
+    """Test the backdrop_url field on GET /api/watchlist results."""
+
+    def setUp(self):
+        """Set up an authenticated user with one tracked TV show."""
+        self.credentials = {"username": "test", "password": "testpass"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.url = reverse("api_watchlist")
+
+        tv_item = Item.objects.create(
+            media_id="1668",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Test TV Show",
+            image="http://example.com/tv.jpg",
+        )
+        TV.objects.create(
+            item=tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+    def _backdrop_url(self, response=None):
+        """Return the backdrop_url field from the watchlist response."""
+        response = response or self.client.get(
+            self.url,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+        result = next(r for r in response.json()["results"] if r["media_id"] == "1668")
+        return result["backdrop_url"]
+
+    @patch("api.views.services.get_media_metadata")
+    def test_backdrop_url_from_cached_metadata(self, mock_get_media_metadata):
+        """backdrop_url reads straight off the cached TMDB metadata dict."""
+        mock_get_media_metadata.return_value = {
+            "backdrop": "https://image.tmdb.org/t/p/w1280/breaking-bad.jpg",
+        }
+
+        self.assertEqual(
+            self._backdrop_url(),
+            "https://image.tmdb.org/t/p/w1280/breaking-bad.jpg",
+        )
+        mock_get_media_metadata.assert_called_once_with(
+            "tv",
+            "1668",
+            Sources.TMDB.value,
+        )
+
+    @patch("api.views.services.get_media_metadata")
+    def test_backdrop_url_null_when_tmdb_has_none(self, mock_get_media_metadata):
+        """A title TMDB has no backdrop art for gets a null field, not an error."""
+        mock_get_media_metadata.return_value = {"backdrop": None}
+
+        self.assertIsNone(self._backdrop_url())
+
+    @patch("api.views.services.get_media_metadata")
+    def test_backdrop_url_null_on_upstream_failure(self, mock_get_media_metadata):
+        """A TMDB failure degrades this one field to null, not a 500."""
+        mock_get_media_metadata.side_effect = services.ProviderAPIError(
+            Sources.TMDB.value,
+            Mock(response=None),
+        )
+
+        response = self.client.get(
+            self.url,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._backdrop_url(response))
 
 
 class ProvidersViewTest(TestCase):

@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestones 7 (status write endpoint), 8 (last-activity timestamp), and 9 (provider-endpoint detail fields), v2 work, built and committed locally, not yet pushed. Ask 3 of v2 (renewal signal) investigated and resolved with no code change needed - Yamtrack already handles it server-side. All four v2 asks are now resolved. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
+**Status**: ✅ All of v1 (Milestones 1-3, 5, 6) and v2 (Milestones 7-9, plus Ask 3's no-code resolution) pushed to `origin/yamtv-api-additions` and verified end-to-end against the real Docker deployment (rebuilt image, real tracked data, real TMDB/JustWatch calls - see §6). Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
 **Last updated**: 2026-09-09
 
 ## 1. Context
@@ -146,3 +146,16 @@ Investigated (read the actual TMDB provider functions, not assumed) rather than 
 Built: `_detail_fields(media_type, media_metadata)` in `src/api/views.py`, merged into the `providers()` response. `_get_available_providers()` now returns `media_metadata` as a fourth tuple element (it was already fetching it and discarding everything but `providers`/`title`) - both call sites (`providers()`, `set_default_provider()`) updated for the new tuple shape; `set_default_provider()` ignores the new element, since the write path never needed detail fields.
 
 Tests added to `src/api/tests/test_views.py` (extending `ProvidersViewTest`): TV response carries `synopsis`/`season_count` and omits `runtime`; movie response carries `synopsis`/`runtime` and omits `season_count`; metadata missing these fields degrades to `null` rather than erroring. `api.tests.test_views` full module run clean (42/42).
+
+## 6. Docker deployment verification (2026-09-09)
+
+Pushed `yamtv-api-additions` to `origin`, rebuilt the local Docker image (`docker build -t ewizza/yamtrack:yamtv-api-additions .`), and recreated the running `yamtrack_dashboard` container from it (`docker compose up -d --force-recreate yamtrack`). No new migrations (Milestones 7-9 added no model fields); container came up healthy on the first try; logs clean of errors.
+
+Smoke-tested every v2 endpoint end-to-end against real tracked data (Eric's actual `ewizza` account, not a test fixture) rather than just the unit-test suite:
+
+- `GET /api/watchlist` — real results across ~50 tracked TV shows/movies, each carrying a real, populated `last_activity` timestamp (Milestone 8) and, for TV, `next_episode` where known (pre-existing Milestone 6) - both fields' values held up against the real DB, not just mocked data.
+- `GET /api/media/tv/<id>/providers` — real synopsis and `season_count` for a tracked show (Reacher), `runtime` correctly absent.
+- `GET /api/media/movie/<id>/providers` — real synopsis and `runtime` for a tracked movie (The Menu), `season_count` correctly absent. Confirmed `default_provider`'s write/read/clear cycle still works after Milestone 9 changed `_get_available_providers()`'s return shape.
+- `PUT /api/media/tv/<id>/status` — set a real tracked show's status to `Paused`, confirmed it dropped out of `GET /api/watchlist` (correctly excluded, since only `In progress`/`Planning` show), reverted it back to `Planning`, confirmed it reappeared with its original `last_activity` unchanged (matching Milestone 8's finding that a status-only write doesn't move it). Also confirmed an invalid status value still 400s against the real deployment.
+
+All test writes were reverted immediately after confirming them - no lasting changes to Eric's real tracked data. Deployment verification is done; still pending is the `dev`-merge/upstream-PR decision (parked in `yam-ecosystem/STATUS.md`'s backlog, not a blocker).

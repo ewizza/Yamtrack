@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestone 7 (status write endpoint, v2 work) built and committed locally, not yet pushed. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
+**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestones 7 (status write endpoint) and 8 (last-activity timestamp), v2 work, built and committed locally, not yet pushed. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
 **Last updated**: 2026-09-09
 
 ## 1. Context
@@ -110,3 +110,20 @@ Investigated (the ask doc's open questions, answered from the actual model rathe
 Built: `set_status` in `src/api/views.py`, reusing `_get_item` and a new `_get_tracked_media`/`_parse_status` pair; routed at `media/<tv_movie_type:media_type>/<str:tmdb_id>/status` in `src/api/urls.py`. An untracked item (no matching `Item`, or an `Item` no TV/Movie row of this user's points at) returns the same 404 shape the default-provider endpoint uses.
 
 Tests added to `src/api/tests/test_views.py` (`SetStatusViewTest`): valid status on a movie, valid status on a TV show (side effects verified via a mocked provider call, same pattern the model-level `TV` tests already use), an out-of-enum value rejected, malformed/empty body rejected, untracked item and cross-user isolation both 404, missing token 401. `api.tests.test_views` full module run clean (36/36). Full-suite run has 70 pre-existing errors/8 pre-existing failures unrelated to this change (MyAnimeList webhook tests failing on a missing local `Invalid client id` secret, present before this milestone) — not new failures.
+
+**Milestone 8 — Last-activity timestamp** (Ask 4 of `yam-ecosystem/yamtrack-api-request-v2.md`'s bundled 4-ask v2 request) ✅ Built 2026-09-09
+
+Adds a `last_activity` field (ISO 8601 datetime) to every `GET /api/watchlist` result, for YAM-TV's recently-watched sort. Fully independent of the other three v2 asks — no dependency on Milestone 7's status endpoint.
+
+Investigated (empirically, via a throwaway Django shell/test script - not just read from source) rather than assumed:
+
+1. **Does this data exist internally already?** Yes - `progressed_at` is an existing `MonitorField` on the base `Media` model (both `TV` and `Movie` inherit it), already a real DB column. No migration needed. But it's not a trivial pass-through: confirmed empirically that `Movie.progressed_at` defaults to `created_at` at creation time (a fresh, untouched movie is *not* null), while `TV.progressed_at` is a Python *property* computed across the show's `Season` rows and returns `None` until at least one season has recorded progress - the two media types don't behave the same way for an untouched title. See the **build decision** below for how this got normalized.
+2. **What counts as "activity"?** Confirmed empirically, not assumed: `progressed_at` updates **only** when the `progress` field itself changes (an episode/movie logged as watched). A status-only edit (e.g. `Planning` → `Dropped` with no progress change) does **not** move it, and neither does a rating or notes edit. This is meaningfully narrower than "last modified for any reason" - it specifically means "last time real watch progress was made," which matches what a "recently watched" sort should mean.
+3. **Format/timezone**: full ISO 8601 with an explicit UTC offset (Python's `datetime.isoformat()` on Django's timezone-aware value, e.g. `2026-09-09T13:20:06.537128+00:00`) - the same raw `.isoformat()` convention `src/app/providers/tmdb.py` already uses for its own date fields; `next_episode`'s `air_date` is date-only by contrast, since it's a calendar date rather than an instant.
+4. **Movies**: progress is effectively binary for a movie (0 or its `max_progress`, normally 1), so `last_activity` for a movie means "when I last marked it watched/unwatched" - a single instant rather than TV's richer per-episode signal, but still a meaningful, comparable timestamp across both media types.
+
+**Build decision**: `last_activity = (media.progressed_at or media.created_at).isoformat()`. Falling back to `created_at` when `progressed_at` is falsy normalizes the Movie/TV asymmetry found in question 1 - every watchlist item always carries a real, non-null timestamp of the same shape, and an unwatched item's "activity" reads as "when it was added," which is the same fallback Movie already got for free from its own field default.
+
+Built: `_last_activity()` in `src/api/views.py`, called per result in `watchlist()`. TV's `progressed_at` property iterates `self.seasons.all()`, which is already `prefetch_related` by `get_media_list()` for TV - no new N+1 query.
+
+Tests added to `src/api/tests/test_views.py` (`WatchlistLastActivityTest`): an untouched movie falls back to `created_at`; a real progress change moves `last_activity` forward and matches the model's own `progressed_at`; a status-only change leaves it unchanged. Existing `test_result_shape` updated to expect the new field. `api.tests.test_views` full module run clean (39/39). Broader suite carries the same pre-existing, unrelated failures as before this session (missing local credentials for MyAnimeList, Hardcover, and similar external providers) - confirmed unrelated since none of the failing tests touch anything this or Milestone 7 changed.

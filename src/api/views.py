@@ -63,6 +63,21 @@ def _next_episodes(tv_media_list, source):
     return next_episodes
 
 
+def _last_activity(media):
+    """Return the ISO 8601 timestamp of a media item's most recent progress.
+
+    Sourced from the existing ``progressed_at`` field (a ``MonitorField`` on
+    the base ``Media`` model) - it updates only when ``progress`` itself
+    changes, not on a status/rating/notes-only edit. Movie's ``progressed_at``
+    is a real column that already defaults to creation time, but TV's is a
+    property computed across its seasons and is ``None`` until an episode has
+    actually been logged - falling back to ``created_at`` normalizes that gap
+    so every item always carries a real, non-null timestamp of the same
+    shape regardless of media type.
+    """
+    return (media.progressed_at or media.created_at).isoformat()
+
+
 @token_auth
 @require_GET
 def watchlist(request):
@@ -92,6 +107,7 @@ def watchlist(request):
                 "title": media.item.title,
                 "image": media.item.image,
                 "status": media.status,
+                "last_activity": _last_activity(media),
             }
             if is_tv:
                 result["next_episode"] = next_episodes.get(media.item.media_id)

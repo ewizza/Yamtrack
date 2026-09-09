@@ -1,5 +1,6 @@
 """Tests for the JSON API views."""
 
+import time
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
@@ -129,6 +130,8 @@ class WatchlistViewTest(TestCase):
 
         results = response.json()["results"]
         tv_result = next(r for r in results if r["title"] == "Test TV Show")
+        last_activity = tv_result.pop("last_activity", None)
+        self.assertIsNotNone(last_activity)
         self.assertEqual(
             tv_result,
             {
@@ -317,6 +320,99 @@ class WatchlistNextEpisodeTest(TestCase):
 
         # The tracked show in setUp has no events of its own.
         self.assertIsNone(self._next_episode())
+
+
+class WatchlistLastActivityTest(TestCase):
+    """Test the last_activity field on GET /api/watchlist results."""
+
+    def setUp(self):
+        """Set up an authenticated user and the watchlist URL."""
+        self.credentials = {"username": "test", "password": "testpass"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.url = reverse("api_watchlist")
+
+    def _last_activity(self, title):
+        """Return the last_activity field for the named watchlist result."""
+        response = self.client.get(
+            self.url,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+        result = next(r for r in response.json()["results"] if r["title"] == title)
+        return result["last_activity"]
+
+    def test_movie_defaults_to_creation_time_before_any_progress(self):
+        """An untouched movie's last_activity falls back to when it was added."""
+        item = Item.objects.create(
+            media_id="238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Test Movie",
+            image="http://example.com/movie.jpg",
+        )
+        movie = Movie.objects.create(
+            item=item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+
+        self.assertEqual(
+            self._last_activity("Test Movie"), movie.created_at.isoformat()
+        )
+
+    @patch("app.models.providers.services.get_media_metadata")
+    def test_movie_updates_when_progress_changes(self, mock_get_metadata):
+        """Making partial progress on a movie moves last_activity forward.
+
+        max_progress is set above the new progress value so the movie stays
+        In progress (not auto-flipped to Completed) and keeps showing up in
+        the watchlist this test reads last_activity back from.
+        """
+        mock_get_metadata.return_value = {"max_progress": 2, "related": {"seasons": []}}
+        item = Item.objects.create(
+            media_id="238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Test Movie",
+            image="http://example.com/movie.jpg",
+        )
+        movie = Movie.objects.create(
+            item=item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+        before = movie.progressed_at
+        time.sleep(0.05)  # ensure a distinguishable timestamp from the clock
+
+        movie.status = Status.IN_PROGRESS.value
+        movie.progress = 1
+        movie.save()
+        movie.refresh_from_db()
+
+        self.assertGreater(movie.progressed_at, before)
+        self.assertEqual(
+            self._last_activity("Test Movie"), movie.progressed_at.isoformat()
+        )
+
+    def test_last_activity_unaffected_by_status_only_change(self):
+        """A status-only edit (no progress change) doesn't move last_activity."""
+        item = Item.objects.create(
+            media_id="238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Test Movie",
+            image="http://example.com/movie.jpg",
+        )
+        movie = Movie.objects.create(
+            item=item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+        before = self._last_activity("Test Movie")
+
+        movie.status = Status.IN_PROGRESS.value
+        movie.save()
+
+        self.assertEqual(self._last_activity("Test Movie"), before)
 
 
 class ProvidersViewTest(TestCase):

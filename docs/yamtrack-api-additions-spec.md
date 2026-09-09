@@ -63,7 +63,7 @@ All three milestones are on the `yamtv-api-additions` branch, fully tested (unit
 **Milestone 4 (optional, only if needed) — Auth hardening / polish**
 Not started, and not currently planned — only pursue this if the token-header auth from §4 turns out to be insufficient once the app is actually in use, or if real usage surfaces a need (e.g. filtering by watch-status, batching). Not required for a working v1 — don't build ahead of an actual need.
 
-**Milestone 5 — Per-provider deep links** (requested in `yamtrack-api-request-deeplinks.md`) ✅ Built 2026-09-08
+**Milestone 5 — Per-provider deep links** (requested in `yam-ecosystem/yamtrack-api-request-deeplinks.md` — shared cross-project folder, `C:\Share\projects\yam-ecosystem\`, moved out of this repo's own docs/ 2026-09-09) ✅ Built 2026-09-08
 
 Adds a nullable `deeplink` field to each provider in `GET /api/media/<tv|movie>/<tmdb_id>/providers` (and to `default_provider`), so YAM-TV can launch straight to a title's page in the streaming app instead of just the app's home screen.
 

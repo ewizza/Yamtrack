@@ -119,12 +119,16 @@ def watchlist(request):
 def _get_available_providers(media_type, tmdb_id, region, *, include_deeplinks=True):
     """Return the region-filtered provider list for a title, or an error response.
 
-    Returns a ``(providers, deeplinks, error_response)`` tuple: on success
-    ``error_response`` is ``None``. On an upstream failure ``providers`` and
-    ``deeplinks`` are ``None`` and ``error_response`` is a ready-to-return
-    ``JsonResponse``. ``deeplinks`` is a ``{provider_id: url}`` map - pass
-    ``include_deeplinks=False`` to skip the JustWatch lookup entirely for
-    callers (like the default-provider write) that don't need it.
+    Returns a ``(providers, deeplinks, media_metadata, error_response)`` tuple:
+    on success ``error_response`` is ``None``. On an upstream failure
+    ``providers``, ``deeplinks`` and ``media_metadata`` are all ``None`` and
+    ``error_response`` is a ready-to-return ``JsonResponse``. ``deeplinks`` is
+    a ``{provider_id: url}`` map - pass ``include_deeplinks=False`` to skip the
+    JustWatch lookup entirely for callers (like the default-provider write)
+    that don't need it. ``media_metadata`` is the raw dict from
+    ``services.get_media_metadata()`` - already fetched here, so callers that
+    want synopsis/season-count/runtime (see ``_detail_fields()``) get it for
+    free rather than triggering a second call.
     """
     try:
         media_metadata = services.get_media_metadata(
@@ -137,7 +141,7 @@ def _get_available_providers(media_type, tmdb_id, region, *, include_deeplinks=T
             {"detail": str(error)},
             status=error.status_code or 502,
         )
-        return None, None, response
+        return None, None, None, response
 
     available = tmdb.filter_providers(media_metadata.get("providers"), region) or []
 
@@ -159,7 +163,28 @@ def _get_available_providers(media_type, tmdb_id, region, *, include_deeplinks=T
         }
         for provider in available
     ]
-    return providers, deeplinks, None
+    return providers, deeplinks, media_metadata, None
+
+
+def _detail_fields(media_type, media_metadata):
+    """Return title/synopsis/season_count (TV) or /runtime (movie) fields.
+
+    All sourced from the same ``media_metadata`` dict ``providers()`` already
+    fetched for provider availability - no extra TMDB call or cache lookup.
+    ``season_count`` doesn't apply to movies, so a movie gets ``runtime``
+    (already a readable string, e.g. "2h 15m", or ``None`` if TMDB doesn't
+    know it) in its place instead.
+    """
+    fields = {
+        "title": media_metadata.get("title"),
+        "synopsis": media_metadata.get("synopsis"),
+    }
+    details = media_metadata.get("details") or {}
+    if media_type == MediaTypes.TV.value:
+        fields["season_count"] = details.get("seasons")
+    else:
+        fields["runtime"] = details.get("runtime")
+    return fields
 
 
 def _get_item(media_type, tmdb_id):
@@ -191,7 +216,7 @@ def providers(request, media_type, tmdb_id):
     Region-filtered using the authenticated user's watch_provider_region.
     """
     region = request.user.watch_provider_region
-    available, deeplinks, error_response = _get_available_providers(
+    available, deeplinks, media_metadata, error_response = _get_available_providers(
         media_type,
         tmdb_id,
         region,
@@ -211,6 +236,7 @@ def providers(request, media_type, tmdb_id):
             "region_configured": region != WATCH_PROVIDER_REGION_UNSET,
             "providers": available,
             "default_provider": default_provider,
+            **_detail_fields(media_type, media_metadata),
         },
     )
 
@@ -256,7 +282,7 @@ def set_default_provider(request, media_type, tmdb_id):
         return JsonResponse({"default_provider": None})
 
     region = request.user.watch_provider_region
-    available, _deeplinks, error_response = _get_available_providers(
+    available, _deeplinks, _media_metadata, error_response = _get_available_providers(
         media_type,
         tmdb_id,
         region,

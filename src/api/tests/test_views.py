@@ -582,6 +582,79 @@ class ProvidersViewTest(TestCase):
         self.assertFalse(data["region_configured"])
         self.assertEqual(data["providers"], [])
 
+    @patch("api.views.justwatch.get_deeplinks")
+    @patch("api.views.services.get_media_metadata")
+    def test_includes_synopsis_and_season_count_for_tv(
+        self,
+        mock_get_media_metadata,
+        mock_get_deeplinks,
+    ):
+        """A TV title's response carries synopsis and season_count, not runtime."""
+        mock_get_media_metadata.return_value = {
+            "title": "Test Show",
+            "synopsis": "A show about testing.",
+            "details": {"seasons": 4},
+            "providers": {},
+        }
+        mock_get_deeplinks.return_value = {}
+
+        response = self.client.get(
+            self._url(media_type="tv", tmdb_id="1668"),
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        data = response.json()
+        self.assertEqual(data["title"], "Test Show")
+        self.assertEqual(data["synopsis"], "A show about testing.")
+        self.assertEqual(data["season_count"], 4)
+        self.assertNotIn("runtime", data)
+
+    @patch("api.views.justwatch.get_deeplinks")
+    @patch("api.views.services.get_media_metadata")
+    def test_includes_synopsis_and_runtime_for_movie(
+        self,
+        mock_get_media_metadata,
+        mock_get_deeplinks,
+    ):
+        """A movie's response carries synopsis and runtime, not season_count."""
+        mock_get_media_metadata.return_value = {
+            "title": "Test Movie",
+            "synopsis": "A movie about testing.",
+            "details": {"runtime": "2h 15m"},
+            "providers": {},
+        }
+        mock_get_deeplinks.return_value = {}
+
+        response = self.client.get(
+            self._url(),
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        data = response.json()
+        self.assertEqual(data["title"], "Test Movie")
+        self.assertEqual(data["synopsis"], "A movie about testing.")
+        self.assertEqual(data["runtime"], "2h 15m")
+        self.assertNotIn("season_count", data)
+
+    @patch("api.views.services.get_media_metadata")
+    def test_detail_fields_are_null_when_metadata_lacks_them(
+        self,
+        mock_get_media_metadata,
+    ):
+        """Missing synopsis/details in metadata degrades to null, not an error."""
+        mock_get_media_metadata.return_value = {"providers": {}}
+
+        response = self.client.get(
+            self._url(),
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        data = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(data["title"])
+        self.assertIsNone(data["synopsis"])
+        self.assertIsNone(data["runtime"])
+
     @patch("api.views.services.get_media_metadata")
     def test_unknown_tmdb_id_returns_json_not_found(self, mock_get_media_metadata):
         """An unknown tmdb_id surfaces as a JSON 404, not an HTML error page."""

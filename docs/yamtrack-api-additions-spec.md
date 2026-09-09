@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestones 7 (status write endpoint) and 8 (last-activity timestamp), v2 work, built and committed locally, not yet pushed. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
+**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestones 7 (status write endpoint), 8 (last-activity timestamp), and 9 (provider-endpoint detail fields), v2 work, built and committed locally, not yet pushed. Ask 3 of v2 (renewal signal) investigated and resolved with no code change needed - Yamtrack already handles it server-side. All four v2 asks are now resolved. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
 **Last updated**: 2026-09-09
 
 ## 1. Context
@@ -131,3 +131,18 @@ Tests added to `src/api/tests/test_views.py` (`WatchlistLastActivityTest`): an u
 **Ask 3 (renewal signal, `yam-ecosystem/yamtrack-api-request-v2.md`) — investigated 2026-09-09, ✅ no API change needed**
 
 Not a milestone - no code changed here. Yamtrack already auto-detects a renewed show and reopens it server-side: `reopen_completed_tv_with_new_seasons()` in `src/events/calendar/tv.py`, already tested (`events/tests/calendar/test_tv.py::test_process_tv_reopens_completed_show_with_new_season_as_planning`), already running on the `reload_calendar` Celery Beat schedule (`src/config/settings.py`, every 24h, `user=None` so it covers every user's Completed shows). When that scan discovers a future-dated episode Event for a season a Completed `TV` row doesn't have yet, it creates the season as `Planning` and flips the show's own `status` to `In progress` - unprompted, with no dependency on Milestone 7's status endpoint. A renewed show simply reappears in `GET /api/watchlist`'s normal In-progress/Planning filter the next time it's polled. Full resolution write-up (data flow traced through `src/events/calendar/selectors.py` and `tv.py`): `yam-ecosystem/yamtrack-api-request-v2.md`.
+
+**Milestone 9 — Detail fields on the providers endpoint** (Ask 2 of `yam-ecosystem/yamtrack-api-request-v2.md`'s bundled 4-ask v2 request) ✅ Built 2026-09-09
+
+Adds `title`, `synopsis`, and (media-type-dependent) `season_count` or `runtime` to `GET /api/media/<tv|movie>/<tmdb_id>/providers`, for YAM-TV's Planning-tab detail view. Last of the four v2 asks; only Ask 2 needed actual new code (Ask 3 needed none).
+
+Investigated (read the actual TMDB provider functions, not assumed) rather than guessed:
+
+1. **Does Yamtrack already have this data anywhere?** Yes, and better than "somewhere" - it's already sitting in the exact same in-memory dict `_get_available_providers()` fetches via `services.get_media_metadata()` for provider availability. `tmdb.tv()`/`tmdb.movie()` (`src/app/providers/tmdb.py`) already return `synopsis` and (for TV) `details.seasons`/`details.episodes`, or (for movies) `details.runtime` - all sourced from the *same* single TMDB call the `providers` endpoint already makes and already caches. This isn't a "small pass-through," it's a **zero-cost** one: the view was already discarding these fields from a dict it had fully in hand.
+2. **New endpoint vs. extending `.../providers`?** Extended `.../providers` - the ask doc's own instinct (bundling is cheaper than a second round trip) turned out to be even more true than assumed, since there's no second *fetch* either, just more keys read off a dict already in scope.
+3. **Movies**: `runtime` — already a human-readable string from `get_readable_duration()` (e.g. `"2h 15m"`, or `null` if TMDB doesn't know the movie's runtime) - reused as-is rather than inventing a new format. `season_count` is simply absent from a movie's response rather than sent as `null`, since the two fields are mutually exclusive by media type.
+4. **Caching**: no new caching needed - this rides the same `services.get_media_metadata()` Redis cache (`CACHE_TIMEOUT = 86400`, 24h, `src/config/settings.py`) the `providers` endpoint's own data already comes from.
+
+Built: `_detail_fields(media_type, media_metadata)` in `src/api/views.py`, merged into the `providers()` response. `_get_available_providers()` now returns `media_metadata` as a fourth tuple element (it was already fetching it and discarding everything but `providers`/`title`) - both call sites (`providers()`, `set_default_provider()`) updated for the new tuple shape; `set_default_provider()` ignores the new element, since the write path never needed detail fields.
+
+Tests added to `src/api/tests/test_views.py` (extending `ProvidersViewTest`): TV response carries `synopsis`/`season_count` and omits `runtime`; movie response carries `synopsis`/`runtime` and omits `season_count`; metadata missing these fields degrades to `null` rather than erroring. `api.tests.test_views` full module run clean (42/42).

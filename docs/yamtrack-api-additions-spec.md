@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ All of v1 (Milestones 1-3, 5, 6) and v2 (Milestones 7-9, plus Ask 3's no-code resolution) pushed to `origin/yamtv-api-additions` and verified end-to-end against the real Docker deployment (rebuilt image, real tracked data, real TMDB/JustWatch calls - see §6). Not merged to `dev`, and **decided 2026-09-09 not to PR upstream** - `upstream/feat/add-api` is already a large, active, DRF-based official API effort with a different design; see §7 and `yam-ecosystem/STATUS.md`'s backlog for the full reasoning.
+**Status**: ✅ All of v1 (Milestones 1-3, 5, 6) and v2 (Milestones 7-9, plus Ask 3's no-code resolution) pushed to `origin/yamtv-api-additions` and verified end-to-end against the real Docker deployment (rebuilt image, real tracked data, real TMDB/JustWatch calls - see §6). Milestone 10 (opt-in `?status=` filter on the watchlist endpoint) built the same day, resolving a fifth ask filed right after v2 closed. Not merged to `dev`, and **decided 2026-09-09 not to PR upstream** - `upstream/feat/add-api` is already a large, active, DRF-based official API effort with a different design; see §7 and `yam-ecosystem/STATUS.md`'s backlog for the full reasoning.
 **Last updated**: 2026-09-09
 
 ## 1. Context
@@ -13,11 +13,12 @@ Rather than have the TV app duplicate this (its own TMDB calls, its own region-f
 
 ## 2. Additions needed
 
-### 2.1 Watchlist read endpoint ✅ Built (Milestone 1)
+### 2.1 Watchlist read endpoint ✅ Built (Milestone 1); status filter made opt-in (Milestone 10)
 `GET /api/watchlist`
-- Returns the user's tracked TV shows and movies with status `In progress` or `Planning` (TMDB-sourced only), with TMDB IDs, titles, poster path, and watch status.
+- Returns the user's tracked TV shows and movies (TMDB-sourced only), with TMDB IDs, titles, poster path, and watch status.
+- Defaults to status `In progress` or `Planning`, same as always. Pass `?status=` (a single value or comma-separated list, e.g. `?status=Completed` or `?status=In%20progress,Planning`) to opt into other statuses — see Milestone 10 below.
 - Auth: `Authorization: Token <token>` header, reusing the existing `User.token` field (see §4 resolution below).
-- Implementation: `src/api/views.py` (`watchlist`), `src/api/auth.py` (`token_auth`).
+- Implementation: `src/api/views.py` (`watchlist`, `_parse_watchlist_statuses`), `src/api/auth.py` (`token_auth`).
 
 ### 2.2 Providers-as-JSON endpoint ✅ Built (Milestone 2)
 `GET /api/media/<tv|movie>/<tmdb_id>/providers`
@@ -146,6 +147,23 @@ Investigated (read the actual TMDB provider functions, not assumed) rather than 
 Built: `_detail_fields(media_type, media_metadata)` in `src/api/views.py`, merged into the `providers()` response. `_get_available_providers()` now returns `media_metadata` as a fourth tuple element (it was already fetching it and discarding everything but `providers`/`title`) - both call sites (`providers()`, `set_default_provider()`) updated for the new tuple shape; `set_default_provider()` ignores the new element, since the write path never needed detail fields.
 
 Tests added to `src/api/tests/test_views.py` (extending `ProvidersViewTest`): TV response carries `synopsis`/`season_count` and omits `runtime`; movie response carries `synopsis`/`runtime` and omits `season_count`; metadata missing these fields degrades to `null` rather than erroring. `api.tests.test_views` full module run clean (42/42).
+
+**Milestone 10 — Opt-in status filter on the watchlist endpoint** (`yam-ecosystem/yamtrack-api-request-watchlist-filter.md`, a fifth ask filed after the v2 round closed) ✅ Built 2026-09-09
+
+Adds `?status=` to `GET /api/watchlist` so a `Completed`/`Paused`/`Dropped` title (writable since Milestone 7) can actually be read back somewhere, instead of just disappearing from the only read endpoint the moment its status changes. Unblocks YAM-TV's Completed tab and mark-complete action (M8/M9), which Milestone 7 alone made unsafe to ship.
+
+Investigated (the ask doc's four open questions, answered from the actual code rather than guessed):
+
+1. **Was the `In progress`/`Planning` filter deliberate, e.g. for performance?** No. `watchlist()` already calls `BasicMedia.objects.get_media_list(status_filter=MediaStatusChoices.ALL, ...)` — `MediaStatusChoices.ALL` means `get_media_list()` (`src/app/models.py`) applies *no* status filter at the query level at all. The two-status restriction was a plain Python list-comprehension filter applied to the already-fetched full result, purely incidental to what the view happened to keep before Milestone 7 gave callers a reason to want more.
+2. **Cost of returning Completed/Paused/Dropped too**: zero. `get_media_list()`'s window-function dedup, `select_related("item")`, and `prefetch_related` are identical regardless of status — nothing in the query shape is status-specific. Confirmed by reading the method directly, not assumed from behavior.
+3. **Scale**: queried Eric's real `ewizza` account directly (`docker exec yamtrack_dashboard python manage.py shell`) rather than estimating — 70 tracked TV rows (20 Completed / 22 In progress / 28 Planning / 0 Paused / 0 Dropped) and 4 Movie rows (all Planning), 74 total vs. today's 54 filtered. Nowhere near a pagination concern either way.
+4. **Shape if opt-in (Option A)**: a single `status` query param, comma-separated for multiple values (`?status=Completed` or `?status=Planning,Completed`), matching the ask doc's own suggestion and reusing the same validate-against-the-fixed-enum approach `_parse_status()` already established for the write endpoint.
+
+**Build decision**: Option A (opt-in param, default unchanged) over Option B (drop the filter, return everything always) — despite the query cost being identical either way, Option A keeps the default poll payload small for callers that only ever want Watching/Planning (the ask doc's own stated concern for YAM-TV's M12 recently-watched sort) and leaves every existing caller's behavior byte-for-byte unchanged with no opt-in.
+
+Built: `_parse_watchlist_statuses()` in `src/api/views.py`, called at the top of `watchlist()`; `DEFAULT_WATCHLIST_STATUSES` replaces the old module-level `WATCHLIST_STATUSES` constant. An empty or out-of-enum `status` value 400s with the valid list, same pattern as `_parse_status()`.
+
+Tests added to `src/api/tests/test_views.py` (extending `WatchlistViewTest`): `?status=Completed` returns just the Completed item; a comma-separated list unions statuses; an out-of-enum value and an empty `status=` both 400. `api.tests.test_views` full module run clean (46/46); `ruff check` clean.
 
 ## 6. Docker deployment verification (2026-09-09)
 

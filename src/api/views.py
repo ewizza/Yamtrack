@@ -15,7 +15,7 @@ from events.models import Event, SentinelDatetime
 from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
 
 WATCHLIST_MEDIA_TYPES = ("tv", "movie")
-WATCHLIST_STATUSES = {Status.IN_PROGRESS, Status.PLANNING}
+DEFAULT_WATCHLIST_STATUSES = {Status.IN_PROGRESS.value, Status.PLANNING.value}
 
 
 def _next_episodes(tv_media_list, source):
@@ -78,10 +78,42 @@ def _last_activity(media):
     return (media.progressed_at or media.created_at).isoformat()
 
 
+def _parse_watchlist_statuses(request):
+    """Parse the ``?status=`` query param into a set of Status values, or an error.
+
+    Returns a ``(statuses, error_response)`` tuple. Comma-separated list of
+    ``Status`` enum values, e.g. ``?status=Completed`` or
+    ``?status=In%20progress,Planning``. Omitted entirely -> today's default
+    (``In progress``, ``Planning``), so existing callers see no change unless
+    they opt in. Rejects anything outside the fixed 5-value enum, same as
+    ``_parse_status()`` does for the status-write endpoint.
+    """
+    raw = request.GET.get("status")
+    if raw is None:
+        return DEFAULT_WATCHLIST_STATUSES, None
+
+    requested = {value.strip() for value in raw.split(",") if value.strip()}
+    valid_values = {choice.value for choice in Status}
+    if not requested or not requested <= valid_values:
+        detail = f"status must be one or more of: {', '.join(sorted(valid_values))}."
+        return None, JsonResponse({"detail": detail}, status=400)
+
+    return requested, None
+
+
 @token_auth
 @require_GET
 def watchlist(request):
-    """Return the authenticated user's tracked, TMDB-sourced TV shows and movies."""
+    """Return the authenticated user's tracked, TMDB-sourced TV shows and movies.
+
+    Filtered to ``In progress``/``Planning`` by default; pass ``?status=`` to
+    opt into other statuses (e.g. ``?status=Completed``) - see
+    ``_parse_watchlist_statuses()``.
+    """
+    statuses, error_response = _parse_watchlist_statuses(request)
+    if error_response is not None:
+        return error_response
+
     results = []
 
     for media_type in WATCHLIST_MEDIA_TYPES:
@@ -94,7 +126,7 @@ def watchlist(request):
         tracked = [
             media
             for media in media_list
-            if media.item.source == Sources.TMDB and media.status in WATCHLIST_STATUSES
+            if media.item.source == Sources.TMDB and media.status in statuses
         ]
 
         is_tv = media_type == MediaTypes.TV.value

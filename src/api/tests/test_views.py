@@ -180,6 +180,50 @@ class WatchlistViewTest(TestCase):
         titles = {result["title"] for result in response.json()["results"]}
         self.assertNotIn("Other User Movie", titles)
 
+    def test_status_param_opts_into_other_statuses(self):
+        """?status=Completed returns Completed items instead of the default."""
+        response = self.client.get(
+            self.url,
+            {"status": "Completed"},
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = {result["title"] for result in response.json()["results"]}
+        self.assertEqual(titles, {"Completed Movie"})
+
+    def test_status_param_accepts_comma_separated_list(self):
+        """A comma-separated status list unions all the requested statuses."""
+        response = self.client.get(
+            self.url,
+            {"status": "Planning,Completed"},
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = {result["title"] for result in response.json()["results"]}
+        self.assertEqual(titles, {"Test Movie", "Completed Movie"})
+
+    def test_status_param_rejects_value_outside_the_status_enum(self):
+        """A status value that isn't one of Yamtrack's fixed choices is rejected."""
+        response = self.client.get(
+            self.url,
+            {"status": "Watching Later"},
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_status_param_rejects_empty_value(self):
+        """An empty status param (?status=) is rejected, not treated as ALL."""
+        response = self.client.get(
+            self.url,
+            {"status": ""},
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
 
 class WatchlistNextEpisodeTest(TestCase):
     """Test the next_episode field on GET /api/watchlist TV results."""

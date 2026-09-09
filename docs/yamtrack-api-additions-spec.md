@@ -2,8 +2,8 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ Milestones 1-3 built and pushed to `origin/yamtv-api-additions`. ✅ Milestones 5 (deep links) and 6 (next-episode badge) built and committed locally, not yet pushed or tested end-to-end. Not yet merged to `dev` or opened as a PR — pending end-to-end testing against the Docker deployment.
-**Last updated**: 2026-09-08
+**Status**: ✅ Milestones 1-3, 5, 6 built, pushed, and deployed live against the Docker deployment (verified working from YAM-TV's side). ✅ Milestone 7 (status write endpoint, v2 work) built and committed locally, not yet pushed. Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
+**Last updated**: 2026-09-09
 
 ## 1. Context
 
@@ -93,3 +93,20 @@ One correction from the original plan: `Event.item` is a TV show's **season** `I
 Built: `_next_episodes()` in `src/api/views.py`, batched as one query across the whole watchlist (`item__media_id__in=[...]`) rather than per-show, mirroring `_annotate_tv_released_episodes()`'s query shape but forward-looking (`datetime__gte=now`, earliest instead of latest). Excludes season 0 (specials, matching that same existing convention), season-level events with no episode number, and the far-future sentinel datetime `Event` uses for episodes with no confirmed air date yet (`SentinelDatetime.max_datetime()` — that's a placeholder, not a real date to hand back to a client).
 
 Tests added to `src/api/tests/test_views.py` (`WatchlistNextEpisodeTest`): earliest-episode-wins, past episodes ignored, specials ignored, season-level (no episode number) events ignored, the unknown-air-date sentinel ignored, and no cross-show leakage. Full suite run clean against the pre-existing baseline.
+
+**Milestone 7 — Status write endpoint** (Ask 1 of `yam-ecosystem/yamtrack-api-request-v2.md`'s bundled 4-ask v2 request) ✅ Built 2026-09-09
+
+Adds `PUT /api/media/<tv|movie>/<tmdb_id>/status`, so YAM-TV can mark a title Watching/Planning/Completed/etc. without opening the web UI. Blocks 3 of the 4 YAM-TV v2 features (mark-complete, the unified status modal, the Planning-detail view's "Start" action).
+
+Investigated (the ask doc's open questions, answered from the actual model rather than assumed):
+
+1. **Status vocabulary**: a fixed Django `TextChoices` enum (`app.models.Status`), five values — `Completed`, `In progress`, `Planning`, `Paused`, `Dropped` — not free text. The two values YAM-TV had observed live were only a subset. The endpoint validates against this enum and rejects anything else with a 400.
+2. **Transition rules**: none exist. Nothing in the model or the web UI's own `MediaForm` restricts which status can follow which — any of the five is a valid write from any current value, same as the web UI already allows. Nothing to enforce server-side beyond enum membership.
+3. **Side effects — yes, real ones, and this endpoint intentionally doesn't suppress them**: it's a thin wrapper around the exact same `Media.save()` path the web UI's own status field already goes through, so whatever the web UI does on a status change, this does too. Concretely: setting `Completed` fills `progress` to the title's max (fetched from provider metadata) — i.e. marks it fully watched. For TV specifically, `TV.save()` goes further: `Completed` creates any missing Season/Episode records and marks every already-released episode watched; `Dropped` cascades to any in-progress seasons; and every status change (regardless of target) triggers an async recalendar (`item.fetch_releases(delay=True)`) — the same trigger Milestone 6's `next_episode` data depends on, relevant context for Ask 3's renewal-signal investigation. Movies have no season cascade — just the progress fill.
+4. **Field naming**: `status` is already the literal field name on the model, storing the enum's string values directly (no internal numeric code) — the request/response shape from the ask doc (`{"status": "Completed"}`) needed no adjustment.
+
+**Scope decision**: the endpoint requires an existing TV/Movie tracking record for the (user, item) pair — it doesn't create one from scratch the way the full web `MediaForm`/`media_save` flow does (fetching provider metadata, creating the `Item`, etc.). Every title the watchlist endpoint surfaces already has one, since it's filtered to `In progress`/`Planning`. If YAM-TV's v2 "Start" action turns out to need creating a tracking record for a title that isn't tracked at all yet (as opposed to moving an already-Planning title to In progress), that's a new ask, not something this milestone covers.
+
+Built: `set_status` in `src/api/views.py`, reusing `_get_item` and a new `_get_tracked_media`/`_parse_status` pair; routed at `media/<tv_movie_type:media_type>/<str:tmdb_id>/status` in `src/api/urls.py`. An untracked item (no matching `Item`, or an `Item` no TV/Movie row of this user's points at) returns the same 404 shape the default-provider endpoint uses.
+
+Tests added to `src/api/tests/test_views.py` (`SetStatusViewTest`): valid status on a movie, valid status on a TV show (side effects verified via a mocked provider call, same pattern the model-level `TV` tests already use), an out-of-enum value rejected, malformed/empty body rejected, untracked item and cross-user isolation both 404, missing token 401. `api.tests.test_views` full module run clean (36/36). Full-suite run has 70 pre-existing errors/8 pre-existing failures unrelated to this change (MyAnimeList webhook tests failing on a missing local `Invalid client id` secret, present before this milestone) — not new failures.

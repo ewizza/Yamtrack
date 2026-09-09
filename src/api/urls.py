@@ -16,4 +16,9 @@ urlpatterns = [
         views.set_default_provider,
         name="api_default_provider",
     ),
+    path(
+        "media/<tv_movie_type:media_type>/<str:tmdb_id>/status",
+        views.set_status,
+        name="api_status",
+    ),
 ]

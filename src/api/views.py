@@ -2,6 +2,7 @@
 
 import json
 
+from django.apps import apps
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods
@@ -262,3 +263,65 @@ def set_default_provider(request, media_type, tmdb_id):
     )
     default_provider = {"id": match["id"], "name": match["name"]}
     return JsonResponse({"default_provider": default_provider})
+
+
+def _get_tracked_media(media_type, item, user):
+    """Return the user's TV/Movie tracking record for this item, or None.
+
+    ``status`` lives on the TV/Movie row itself (not a separate preference
+    table like ``DefaultProvider``), so unlike the default-provider write
+    this requires an existing tracking record - it doesn't create one from
+    scratch. Every title the watchlist endpoint surfaces already has one,
+    since it's filtered to "In progress"/"Planning" statuses.
+    """
+    model = apps.get_model(app_label="app", model_name=media_type)
+    return model.objects.filter(item=item, user=user).first()
+
+
+def _parse_status(request):
+    """Parse the request body into a valid Status value, or an error response.
+
+    Returns a ``(status, error_response)`` tuple. Rejects anything outside
+    Yamtrack's fixed ``Status`` choices (it's a Django enum, not free text)
+    rather than passing arbitrary strings through to the model.
+    """
+    try:
+        payload = json.loads(request.body) if request.body else None
+    except json.JSONDecodeError:
+        return None, JsonResponse({"detail": "Invalid JSON body."}, status=400)
+
+    status = payload.get("status") if isinstance(payload, dict) else None
+    valid_values = [choice.value for choice in Status]
+    if status not in valid_values:
+        response = JsonResponse(
+            {"detail": f"status must be one of: {', '.join(valid_values)}."},
+            status=400,
+        )
+        return None, response
+
+    return status, None
+
+
+@token_auth
+@require_http_methods(["PUT"])
+def set_status(request, media_type, tmdb_id):
+    """Set the authenticated user's watch status for an already-tracked title.
+
+    Setting status has real side effects in Yamtrack itself (e.g. Completed
+    fills in progress/watched-episode state) - this endpoint is a thin
+    wrapper around the same model save() path the web UI's own status field
+    already uses, so those side effects apply exactly the same way here.
+    """
+    item = _get_item(media_type, tmdb_id)
+    media = _get_tracked_media(media_type, item, request.user) if item else None
+    if media is None:
+        return JsonResponse({"detail": "This title isn't tracked yet."}, status=404)
+
+    status, error_response = _parse_status(request)
+    if error_response is not None:
+        return error_response
+
+    media.status = status
+    media.save()
+
+    return JsonResponse({"status": media.status})

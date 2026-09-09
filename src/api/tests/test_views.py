@@ -668,3 +668,149 @@ class SetDefaultProviderViewTest(TestCase):
         response = self.client.put(self._url())
 
         self.assertEqual(response.status_code, 401)
+
+
+class SetStatusViewTest(TestCase):
+    """Test the PUT /api/media/<media_type>/<tmdb_id>/status endpoint."""
+
+    def setUp(self):
+        """Set up an authenticated user with one tracked movie and TV show."""
+        self.credentials = {"username": "test", "password": "testpass"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+
+        self.movie_item = Item.objects.create(
+            media_id="238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Test Movie",
+            image="http://example.com/movie.jpg",
+        )
+        self.movie = Movie.objects.create(
+            item=self.movie_item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+
+        self.tv_item = Item.objects.create(
+            media_id="1668",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Test TV Show",
+            image="http://example.com/tv.jpg",
+        )
+        self.tv = TV.objects.create(
+            item=self.tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+    def _url(self, media_type="movie", tmdb_id="238"):
+        """Build the status URL for a given media type and tmdb id."""
+        return reverse(
+            "api_status",
+            kwargs={"media_type": media_type, "tmdb_id": tmdb_id},
+        )
+
+    def _put(self, body, url=None, **kwargs):
+        """PUT to the status endpoint as the authenticated user."""
+        headers = {"Authorization": f"Token {self.user.token}"}
+        return self.client.put(
+            url or self._url(),
+            data=body,
+            content_type="application/json",
+            headers=headers,
+            **kwargs,
+        )
+
+    def test_sets_status_on_a_movie(self):
+        """A valid status value is saved and echoed back."""
+        response = self._put('{"status": "Dropped"}')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "Dropped"})
+        self.movie.refresh_from_db()
+        self.assertEqual(self.movie.status, Status.DROPPED.value)
+
+    @patch("app.models.providers.services.get_media_metadata")
+    def test_sets_status_on_a_tv_show(self, mock_get_metadata):
+        """Setting a TV show's status applies the model's own side effects.
+
+        Here: Completed fills in progress, same as the web UI's status field.
+        """
+        mock_get_metadata.return_value = {
+            "max_progress": 10,
+            "related": {"seasons": []},
+        }
+
+        response = self._put(
+            '{"status": "Completed"}',
+            url=self._url(media_type="tv", tmdb_id="1668"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "Completed"})
+        self.tv.refresh_from_db()
+        self.assertEqual(self.tv.status, Status.COMPLETED.value)
+
+    def test_rejects_value_outside_the_status_enum(self):
+        """A status value that isn't one of Yamtrack's fixed choices is rejected."""
+        response = self._put('{"status": "Watching Later"}')
+
+        self.assertEqual(response.status_code, 400)
+        self.movie.refresh_from_db()
+        self.assertEqual(self.movie.status, Status.PLANNING.value)
+
+    def test_rejects_malformed_json(self):
+        """A malformed JSON body is a clean 400, not an uncaught exception."""
+        response = self._put("{not valid json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_rejects_empty_body(self):
+        """A missing status field is rejected the same as an invalid one."""
+        response = self.client.put(
+            self._url(),
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_untracked_item_returns_not_found(self):
+        """A tmdb_id with no matching tracked Item returns 404."""
+        response = self._put(
+            '{"status": "Completed"}',
+            url=self._url(tmdb_id="999999"),
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_item_tracked_by_another_user_returns_not_found(self):
+        """An Item that exists but isn't tracked by this user returns 404."""
+        other_credentials = {"username": "other", "password": "testpass"}
+        other_user = get_user_model().objects.create_user(**other_credentials)
+        Movie.objects.create(
+            item=self.movie_item,
+            user=other_user,
+            status=Status.PLANNING.value,
+        )
+        third_credentials = {"username": "third", "password": "testpass"}
+        third_user = get_user_model().objects.create_user(**third_credentials)
+
+        response = self.client.put(
+            self._url(),
+            data='{"status": "Completed"}',
+            content_type="application/json",
+            headers={"Authorization": f"Token {third_user.token}"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_missing_token_is_unauthorized(self):
+        """A request with no Authorization header is rejected."""
+        response = self.client.put(
+            self._url(),
+            data='{"status": "Completed"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 401)

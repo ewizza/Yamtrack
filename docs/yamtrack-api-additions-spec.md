@@ -2,7 +2,7 @@
 
 **Project**: Eric's Yamtrack fork (existing Claude Code project, Docker on the home server)
 **Why**: supports a new companion project, the YAM-TV Launcher Android TV app (see `yam-tv-launcher-app-spec.md`, same Research folder). This doc covers only the changes needed *inside Yamtrack* — the TV app itself is a separate project/spec.
-**Status**: ✅ All of v1 (Milestones 1-3, 5, 6) and v2 (Milestones 7-9, plus Ask 3's no-code resolution) pushed to `origin/yamtv-api-additions` and verified end-to-end against the real Docker deployment (rebuilt image, real tracked data, real TMDB/JustWatch calls - see §6). Not yet merged to `dev` or opened as a PR — see `yam-ecosystem/STATUS.md` for the open question of whether/when to PR upstream.
+**Status**: ✅ All of v1 (Milestones 1-3, 5, 6) and v2 (Milestones 7-9, plus Ask 3's no-code resolution) pushed to `origin/yamtv-api-additions` and verified end-to-end against the real Docker deployment (rebuilt image, real tracked data, real TMDB/JustWatch calls - see §6). Not merged to `dev`, and **decided 2026-09-09 not to PR upstream** - `upstream/feat/add-api` is already a large, active, DRF-based official API effort with a different design; see §7 and `yam-ecosystem/STATUS.md`'s backlog for the full reasoning.
 **Last updated**: 2026-09-09
 
 ## 1. Context
@@ -158,4 +158,16 @@ Smoke-tested every v2 endpoint end-to-end against real tracked data (Eric's actu
 - `GET /api/media/movie/<id>/providers` — real synopsis and `runtime` for a tracked movie (The Menu), `season_count` correctly absent. Confirmed `default_provider`'s write/read/clear cycle still works after Milestone 9 changed `_get_available_providers()`'s return shape.
 - `PUT /api/media/tv/<id>/status` — set a real tracked show's status to `Paused`, confirmed it dropped out of `GET /api/watchlist` (correctly excluded, since only `In progress`/`Planning` show), reverted it back to `Planning`, confirmed it reappeared with its original `last_activity` unchanged (matching Milestone 8's finding that a status-only write doesn't move it). Also confirmed an invalid status value still 400s against the real deployment.
 
-All test writes were reverted immediately after confirming them - no lasting changes to Eric's real tracked data. Deployment verification is done; still pending is the `dev`-merge/upstream-PR decision (parked in `yam-ecosystem/STATUS.md`'s backlog, not a blocker).
+All test writes were reverted immediately after confirming them - no lasting changes to Eric's real tracked data.
+
+## 7. Upstream PR decision (2026-09-09) — ❌ not now
+
+Investigated before deciding rather than assuming a personal-use API surface should default to staying local or default to going up: fetched `upstream/feat/add-api` and diffed it against `upstream/dev`.
+
+**Finding**: it's a large, deliberate, still-real official API effort - not a stray experiment. 100+ commits, four contributors including FuzzyGrim (the maintainer) themselves, a full [Django REST Framework](https://www.django-rest-framework.org/) implementation with `drf-spectacular` OpenAPI schema generation, its own dedicated CI image-publish workflow, and endpoint coverage for media, seasons, episodes, lists, calendar, history, and search - substantially broader in scope than this fork's four endpoints. Last commit 2026-07-13 (stale relative to `dev`'s 2026-08-27 HEAD, so not actively landing right now), but the contributor count and design investment make clear it's a sanctioned direction, not something to route around.
+
+**Decision**: this fork's API work stays on `yamtv-api-additions`, not proposed upstream. Two things made this the wrong contribution to make, not just a stylistic preference:
+- **Overlapping purpose, incompatible shape.** Both efforts solve "expose Yamtrack's data over an API," but this fork's endpoints are plain Django views (`JsonResponse`, no schema, reusing the existing web-UI token) built to serve YAM-TV's specific needs, while upstream's is a general-purpose DRF API with OpenAPI docs meant for arbitrary API consumers. Proposing this fork's version alongside or instead of that effort would mean either a from-scratch DRF rewrite (not worth it for code that already works for its one actual consumer) or maintainer confusion about which API surface is canonical.
+- **Ongoing maintenance cost that isn't Eric's to take on.** Merging upstream would mean fielding other self-hosters' bug reports, feature requests, and compatibility expectations for an API designed around one specific companion app's needs - a cost with no offsetting benefit here, since YAM-TV already has what it needs on the fork.
+
+**Revisit condition**: not "never" - if/when `upstream/feat/add-api` actually merges to `dev` and ships, the real question becomes whether **YAM-TV should migrate to consume the official API** instead of this fork's, not whether to upstream this fork's version. Worth checking `upstream/dev` for that merge occasionally; not something to poll for actively.

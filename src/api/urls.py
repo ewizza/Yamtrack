@@ -6,6 +6,7 @@ register_converter(converters.TvMovieType, "tv_movie_type")
 
 urlpatterns = [
     path("watchlist", views.watchlist, name="api_watchlist"),
+    path("search", views.search, name="api_search"),
     path(
         "media/<tv_movie_type:media_type>/<str:tmdb_id>/providers",
         views.providers,

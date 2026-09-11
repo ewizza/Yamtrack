@@ -1124,3 +1124,150 @@ class SetStatusViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 401)
+
+
+def _search_page(results):
+    """Build a tmdb.search()-shaped page dict for the given result list."""
+    return {
+        "page": 1,
+        "total_results": len(results),
+        "total_pages": 1,
+        "results": results,
+    }
+
+
+BLUES_BROTHERS_RESULT = {
+    "media_id": 12130,
+    "source": Sources.TMDB.value,
+    "media_type": "movie",
+    "title": "The Blues Brothers",
+    "image": "https://image.tmdb.org/t/p/w500/abc.jpg",
+}
+
+
+class SearchViewTest(TestCase):
+    """Test the GET /api/search endpoint."""
+
+    def setUp(self):
+        """Set up an authenticated user."""
+        self.credentials = {"username": "test", "password": "testpass"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.url = reverse("api_search")
+
+    def _get(self, query="blues brothers"):
+        """Issue an authenticated GET, with query omitted entirely if None."""
+        params = {} if query is None else {"query": query}
+        return self.client.get(
+            self.url,
+            params,
+            headers={"Authorization": f"Token {self.user.token}"},
+        )
+
+    @staticmethod
+    def _fake_search(movie_results=(), tv_results=()):
+        """Return a tmdb.search() side_effect keyed by media_type."""
+
+        def fake_search(media_type, query, page):  # noqa: ARG001
+            if media_type == "movie":
+                return _search_page(list(movie_results))
+            return _search_page(list(tv_results))
+
+        return fake_search
+
+    @patch("api.views.tmdb.search")
+    def test_merges_tv_and_movie_results(self, mock_search):
+        """Results from both media types come back in one response."""
+        mock_search.side_effect = self._fake_search(
+            movie_results=[BLUES_BROTHERS_RESULT],
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["results"],
+            [
+                {
+                    "media_type": "movie",
+                    "tmdb_id": 12130,
+                    "title": "The Blues Brothers",
+                    "image": "https://image.tmdb.org/t/p/w500/abc.jpg",
+                    "tracked_status": None,
+                },
+            ],
+        )
+        mock_search.assert_any_call("tv", "blues brothers", page=1)
+        mock_search.assert_any_call("movie", "blues brothers", page=1)
+
+    @patch("api.views.tmdb.search")
+    def test_tracked_status_reflects_existing_tracking(self, mock_search):
+        """An already-tracked title carries its current status, not null."""
+        item = Item.objects.create(
+            media_id="12130",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="The Blues Brothers",
+            image="http://example.com/abc.jpg",
+        )
+        Movie.objects.create(item=item, user=self.user, status=Status.PLANNING.value)
+        mock_search.side_effect = self._fake_search(
+            movie_results=[BLUES_BROTHERS_RESULT],
+        )
+
+        response = self._get()
+
+        result = response.json()["results"][0]
+        self.assertEqual(result["tracked_status"], Status.PLANNING.value)
+
+    @patch("api.views.tmdb.search")
+    def test_tracked_status_is_isolated_per_user(self, mock_search):
+        """Another user's tracking of the same title doesn't leak in."""
+        other_credentials = {"username": "other", "password": "testpass"}
+        other_user = get_user_model().objects.create_user(**other_credentials)
+        item = Item.objects.create(
+            media_id="12130",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="The Blues Brothers",
+            image="http://example.com/abc.jpg",
+        )
+        Movie.objects.create(item=item, user=other_user, status=Status.PLANNING.value)
+        mock_search.side_effect = self._fake_search(
+            movie_results=[BLUES_BROTHERS_RESULT],
+        )
+
+        response = self._get()
+
+        result = response.json()["results"][0]
+        self.assertIsNone(result["tracked_status"])
+
+    def test_empty_query_returns_bad_request(self):
+        """An empty ``query=`` 400s instead of hitting TMDB."""
+        response = self._get(query="")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_query_returns_bad_request(self):
+        """Omitting ``?query=`` entirely 400s the same way as an empty one."""
+        response = self._get(query=None)
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("api.views.tmdb.search")
+    def test_upstream_failure_returns_clean_error(self, mock_search):
+        """A TMDB failure surfaces as a JSON error, not a 500."""
+        mock_search.side_effect = services.ProviderAPIError(
+            Sources.TMDB.value,
+            Exception("boom"),
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("detail", response.json())
+
+    def test_missing_token_is_unauthorized(self):
+        """A request with no Authorization header is rejected."""
+        response = self.client.get(self.url, {"query": "blues brothers"})
+
+        self.assertEqual(response.status_code, 401)

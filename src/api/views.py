@@ -17,7 +17,7 @@ from users.models import WATCH_PROVIDER_REGION_UNSET, MediaStatusChoices
 
 logger = logging.getLogger(__name__)
 
-WATCHLIST_MEDIA_TYPES = ("tv", "movie")
+TV_MOVIE_MEDIA_TYPES = ("tv", "movie")
 DEFAULT_WATCHLIST_STATUSES = {Status.IN_PROGRESS.value, Status.PLANNING.value}
 
 
@@ -147,7 +147,7 @@ def watchlist(request):
 
     results = []
 
-    for media_type in WATCHLIST_MEDIA_TYPES:
+    for media_type in TV_MOVIE_MEDIA_TYPES:
         media_list = BasicMedia.objects.get_media_list(
             user=request.user,
             media_type=media_type,
@@ -435,3 +435,79 @@ def set_status(request, media_type, tmdb_id):
     media.save()
 
     return JsonResponse({"status": media.status})
+
+
+def _parse_search_query(request):
+    """Parse the ``?query=`` param, or an error response if it's missing/empty."""
+    query = request.GET.get("query", "").strip()
+    if not query:
+        return None, JsonResponse({"detail": "query must not be empty."}, status=400)
+    return query, None
+
+
+def _tracked_statuses(media_type, media_ids, user):
+    """Return ``{media_id: status}`` for whichever of ``media_ids`` the user tracks.
+
+    One batched query per media type rather than a lookup per search result -
+    same N+1-avoidance reasoning as ``_next_episodes()``. Untracked ids are
+    simply absent from the returned dict.
+    """
+    if not media_ids:
+        return {}
+    model = apps.get_model(app_label="app", model_name=media_type)
+    rows = model.objects.filter(
+        user=user,
+        item__source=Sources.TMDB.value,
+        item__media_id__in=media_ids,
+    ).values_list("item__media_id", "status")
+    return dict(rows)
+
+
+@token_auth
+@require_GET
+def search(request):
+    """Search TMDB for TV shows and movies by title, merged into one response.
+
+    Combines two calls to the existing ``tmdb.search()`` wrapper (one per
+    media type) rather than switching to TMDB's combined ``/search/multi``,
+    which also returns ``person`` results that would need filtering out -
+    reusing the existing per-media-type function as-is is simpler and it's
+    what Yamtrack's own web "add a title" flow already calls. Returns TMDB's
+    first page only (20 results per media type) - no paging param, matching
+    a TV remote's "type a few letters, see the top results" use case rather
+    than the web UI's full paginated browse.
+
+    Each result also carries ``tracked_status`` (the title's current watch
+    status for this user, or ``None`` if it isn't tracked) - essentially
+    free since it's one batched query per media type, not a lookup per
+    result.
+    """
+    query, error_response = _parse_search_query(request)
+    if error_response is not None:
+        return error_response
+
+    results = []
+    for media_type in TV_MOVIE_MEDIA_TYPES:
+        try:
+            page_data = tmdb.search(media_type, query, page=1)
+        except services.ProviderAPIError as error:
+            return JsonResponse(
+                {"detail": str(error)},
+                status=error.status_code or 502,
+            )
+
+        media_ids = [str(result["media_id"]) for result in page_data["results"]]
+        tracked = _tracked_statuses(media_type, media_ids, request.user)
+
+        results.extend(
+            {
+                "media_type": media_type,
+                "tmdb_id": result["media_id"],
+                "title": result["title"],
+                "image": result["image"],
+                "tracked_status": tracked.get(str(result["media_id"])),
+            }
+            for result in page_data["results"]
+        )
+
+    return JsonResponse({"results": results})
